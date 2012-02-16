@@ -62,6 +62,7 @@ class ConsumerBase(object):
         """Re-declare the queue after a rabbit reconnect"""
         self.channel = channel
         self.kwargs['channel'] = channel
+        self.kwargs['queue_arguments'] = { 'x-ha-policy' : 'all' }
         self.queue = kombu.entity.Queue(**self.kwargs)
         self.queue.declare()
         if self.reconsume is not None:
