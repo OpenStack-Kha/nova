@@ -55,6 +55,7 @@ class ConsumerBase(object):
         self.tag = str(tag)
         self.kwargs = kwargs
         self.queue = None
+        self.reconsume = None
         self.reconnect(channel)
 
     def reconnect(self, channel):
@@ -63,6 +64,8 @@ class ConsumerBase(object):
         self.kwargs['channel'] = channel
         self.queue = kombu.entity.Queue(**self.kwargs)
         self.queue.declare()
+        if self.reconsume is not None:
+            self.reconsume()
 
     def consume(self, *args, **kwargs):
         """Actually declare the consumer on the amqp channel.  This will
@@ -92,6 +95,7 @@ class ConsumerBase(object):
             message.ack()
 
         self.queue.consume(*args, callback=_callback, **options)
+        self.reconsume = lambda: self.consume(*args, **options)
 
     def cancel(self):
         """Cancel the consuming from the queue, if it has started"""
@@ -102,6 +106,7 @@ class ConsumerBase(object):
             if str(e) != "u'%s'" % self.tag:
                 raise
         self.queue = None
+        self.reconsume = None
 
 
 class DirectConsumer(ConsumerBase):
