@@ -65,8 +65,9 @@ class Connection(carrot_connection.BrokerConnection, rpc_common.Connection):
     def instance(cls, new=True):
         """Returns the instance."""
         if new or not hasattr(cls, '_instance'):
-            params = dict(hostname=FLAGS.rabbit_host,
-                          port=FLAGS.rabbit_port,
+            hostname,port = FLAGS.rabbit_addresses[0].split(':')
+            params = dict(hostname=hostname,
+                          port=int(port),
                           ssl=FLAGS.rabbit_use_ssl,
                           userid=FLAGS.rabbit_userid,
                           password=FLAGS.rabbit_password,
@@ -192,8 +193,8 @@ class Consumer(messaging.Consumer):
                 self.failed_connection = True
                 if max_retries > 0 and tries == max_retries:
                     break
-                fl_host = FLAGS.rabbit_host
-                fl_port = FLAGS.rabbit_port
+                fl_host, fl_port = FLAGS.rabbit_addresses[0].split(':')
+                fl_port = int(fl_port)
                 fl_intv = sleep_time
                 LOG.error(_('AMQP server on %(fl_host)s:%(fl_port)d is'
                             ' unreachable: %(e)s. Trying again in %(fl_intv)d'
