@@ -337,27 +337,33 @@ class Connection(object):
         self.interval_max = 30
         self.memory_transport = False
 
-        self.params = dict(hostname=FLAGS.rabbit_host,
-                          port=FLAGS.rabbit_port,
+        self.params_list = []
+        for adr in FLAGS.rabbit_addresses:
+            hostname, port = adr.split(':')
+            params =  dict(hostname=hostname,
+                          port=int(port),
                           userid=FLAGS.rabbit_userid,
                           password=FLAGS.rabbit_password,
                           virtual_host=FLAGS.rabbit_virtual_host)
+            if FLAGS.fake_rabbit:
+                params['transport'] = 'memory'
+            self.params_list.append(params)
+
         if FLAGS.fake_rabbit:
-            self.params['transport'] = 'memory'
             self.memory_transport = True
         else:
             self.memory_transport = False
         self.connection = None
         self.reconnect()
 
-    def _connect(self):
+    def _connect(self, params):
         """Connect to rabbit.  Re-establish any queues that may have
         been declared before if we are reconnecting.  Exceptions should
         be handled by the caller.
         """
         if self.connection:
             LOG.info(_("Reconnecting to AMQP server on "
-                    "%(hostname)s:%(port)d") % self.params)
+                    "%(hostname)s:%(port)d") % params)
             try:
                 self.connection.close()
             except self.connection_errors:
@@ -366,7 +372,7 @@ class Connection(object):
             # it shouldn't be doing any network operations, yet.
             self.connection = None
         self.connection = kombu.connection.BrokerConnection(
-                **self.params)
+                **params)
         self.connection_errors = self.connection.connection_errors
         if self.memory_transport:
             # Kludge to speed up tests.
@@ -380,7 +386,7 @@ class Connection(object):
         for consumer in self.consumers:
             consumer.reconnect(self.channel)
         LOG.info(_('Connected to AMQP server on '
-                '%(hostname)s:%(port)d' % self.params))
+                '%(hostname)s:%(port)d' % params))
 
     def reconnect(self):
         """Handles reconnecting and re-establishing queues.
@@ -393,9 +399,10 @@ class Connection(object):
 
         attempt = 0
         while True:
+            params = self.params_list[attempt % len(self.params_list)]
             attempt += 1
             try:
-                self._connect()
+                self._connect(params)
                 return
             except self.connection_errors, e:
                 pass
@@ -412,7 +419,7 @@ class Connection(object):
             log_info = {}
             log_info['err_str'] = str(e)
             log_info['max_retries'] = self.max_retries
-            log_info.update(self.params)
+            log_info.update(params)
 
             if self.max_retries and attempt == self.max_retries:
                 LOG.exception(_('Unable to connect to AMQP server on '
