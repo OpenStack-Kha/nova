@@ -45,20 +45,23 @@ FLAGS = flags.FLAGS
 class ConsumerBase(object):
     """Consumer base class."""
 
-    def __init__(self, channel, callback, tag, **kwargs):
+    def __init__(self, channel, callback, tag_gen, **kwargs):
         """Declare a queue on an amqp channel.
 
         'channel' is the amqp channel to use
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         queue name, exchange name, and other kombu options are
         passed in here as a dictionary.
         """
         self.callback = callback
-        self.tag = str(tag)
+        self.tag_gen = tag_gen
+        self.tag = None
         self.kwargs = kwargs
         self.queue = None
+        self.reconsume = None
         self.reconnect(channel)
 
     def reconnect(self, channel):
@@ -67,6 +70,8 @@ class ConsumerBase(object):
         self.kwargs['channel'] = channel
         self.queue = kombu.entity.Queue(**self.kwargs)
         self.queue.declare()
+        if self.reconsume is not None:
+            self.reconsume()
 
     def consume(self, *args, **kwargs):
         """Actually declare the consumer on the amqp channel.  This will
@@ -83,6 +88,7 @@ class ConsumerBase(object):
         Messages will automatically be acked if the callback doesn't
         raise an exception
         """
+        self.tag = str(self.tag_gen.next())
 
         options = {'consumer_tag': self.tag}
         options['nowait'] = kwargs.get('nowait', False)
@@ -96,9 +102,13 @@ class ConsumerBase(object):
             message.ack()
 
         self.queue.consume(*args, callback=_callback, **options)
+        self.reconsume = lambda: self.consume(*args, **options)
 
     def cancel(self):
         """Cancel the consuming from the queue, if it has started"""
+        if self.tag is None:
+            return
+
         try:
             self.queue.cancel(self.tag)
         except KeyError, e:
@@ -106,18 +116,20 @@ class ConsumerBase(object):
             if str(e) != "u'%s'" % self.tag:
                 raise
         self.queue = None
+        self.reconsume = None
 
 
 class DirectConsumer(ConsumerBase):
     """Queue/consumer class for 'direct'"""
 
-    def __init__(self, channel, msg_id, callback, tag, **kwargs):
+    def __init__(self, channel, msg_id, callback, tag_gen, **kwargs):
         """Init a 'direct' queue.
 
         'channel' is the amqp channel to use
         'msg_id' is the msg_id to listen on
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         Other kombu options may be passed
         """
@@ -134,7 +146,7 @@ class DirectConsumer(ConsumerBase):
         super(DirectConsumer, self).__init__(
                 channel,
                 callback,
-                tag,
+                tag_gen,
                 name=msg_id,
                 exchange=exchange,
                 routing_key=msg_id,
@@ -144,7 +156,7 @@ class DirectConsumer(ConsumerBase):
 class TopicConsumer(ConsumerBase):
     """Consumer class for 'topic'"""
 
-    def __init__(self, channel, topic, callback, tag, **kwargs):
+    def __init__(self, channel, topic, callback, tag_gen, **kwargs):
         """Init a 'topic' queue.
 
         'channel' is the amqp channel to use
@@ -167,7 +179,7 @@ class TopicConsumer(ConsumerBase):
         super(TopicConsumer, self).__init__(
                 channel,
                 callback,
-                tag,
+                tag_gen,
                 name=topic,
                 exchange=exchange,
                 routing_key=topic,
@@ -177,13 +189,14 @@ class TopicConsumer(ConsumerBase):
 class FanoutConsumer(ConsumerBase):
     """Consumer class for 'fanout'"""
 
-    def __init__(self, channel, topic, callback, tag, **kwargs):
+    def __init__(self, channel, topic, callback, tag_gen, **kwargs):
         """Init a 'fanout' queue.
 
         'channel' is the amqp channel to use
         'topic' is the topic to listen on
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         Other kombu options may be passed
         """
@@ -204,7 +217,7 @@ class FanoutConsumer(ConsumerBase):
         super(FanoutConsumer, self).__init__(
                 channel,
                 callback,
-                tag,
+                tag_gen,
                 name=queue_name,
                 exchange=exchange,
                 routing_key=topic,
@@ -413,7 +426,7 @@ class Connection(object):
         add it to our list of consumers
         """
         consumer = consumer_cls(self.channel, topic, callback,
-                self.consumer_num.next())
+                self.consumer_num)
         self.consumers.append(consumer)
         return consumer
 
