@@ -1025,6 +1025,17 @@ def is_valid_cidr(address):
     return True
 
 
+def is_valid_mac(address):
+    parts = address.split(':')
+
+    if len(parts) != 6:
+        return False
+    for item in parts:
+        if not re.match('[0-9a-fA-F][0-9a-fA-F]', item):
+            return False
+
+    return True
+
 def monkey_patch():
     """  If the Flags.monkey_patch set as True,
     this function patches a decorator

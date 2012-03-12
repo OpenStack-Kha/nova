@@ -140,7 +140,7 @@ class RPCAllocateFixedIP(object):
         for network in networks:
             address = None
             if requested_networks is not None:
-                for address in (fixed_ip for (uuid, fixed_ip) in \
+                for address in (fixed_ip for (uuid, fixed_ip, fixed_mac) in \
                               requested_networks if network['uuid'] == uuid):
                     break
 
@@ -622,15 +622,24 @@ class NetworkManager(manager.SchedulerDependentManager):
         # TODO(tr3buchet) maybe this needs to be updated in the future if
         #                 there is a better way to determine which networks
         #                 a non-vlan instance should connect to
-        if requested_networks is not None and len(requested_networks) != 0:
-            network_uuids = [uuid for (uuid, fixed_ip) in requested_networks]
-            networks = self.db.network_get_all_by_uuids(context,
-                                                    network_uuids)
-        else:
+        def get_all_networks():
             try:
-                networks = self.db.network_get_all(context)
+                return self.db.network_get_all(context)
             except exception.NoNetworksFound:
                 return []
+
+        if requested_networks is not None and len(requested_networks) != 0:
+            network_uuids = [uuid for (uuid, fixed_ip, fixed_mac) in requested_networks if uuid is not None]
+            if len(network_uuids) > 0:
+                networks = self.db.network_get_all_by_uuids(context,
+                    network_uuids)
+            else:
+                networks = get_all_networks()
+                if len(networks) != 1:
+                    raise exception.NeedExactlyOneArbitraryNetwork()
+                networks[0]['fixed_mac'] = requested_networks[0][2]
+        else:
+            networks = get_all_networks()
         # return only networks which are not vlan networks
         return [network for network in networks if
                 not network['vlan']]
@@ -778,10 +787,10 @@ class NetworkManager(manager.SchedulerDependentManager):
     def _allocate_mac_addresses(self, context, instance_id, networks):
         """Generates mac addresses and creates vif rows in db for them."""
         for network in networks:
-            self.add_virtual_interface(context, instance_id, network['id'])
+            self.add_virtual_interface(context, instance_id, network['id'], network.get('fixed_mac', None))
 
-    def add_virtual_interface(self, context, instance_id, network_id):
-        vif = {'address': self.generate_mac_address(),
+    def add_virtual_interface(self, context, instance_id, network_id, fixed_mac):
+        vif = {'address': fixed_mac if fixed_mac is not None else self.generate_mac_address(),
                    'instance_id': instance_id,
                    'network_id': network_id,
                    'uuid': str(utils.gen_uuid())}
@@ -1099,11 +1108,13 @@ class NetworkManager(manager.SchedulerDependentManager):
         if networks is None or len(networks) == 0:
             return
 
-        network_uuids = [uuid for (uuid, fixed_ip) in networks]
+        # Only check for the existence of non-'arbitrary' networks (uuid is not None)
+        network_uuids = [uuid for (uuid, fixed_ip, fixed_mac) in networks if uuid is not None]
 
-        self._get_networks_by_uuids(context, network_uuids)
+        if len(network_uuids) > 0:
+            self._get_networks_by_uuids(context, network_uuids)
 
-        for network_uuid, address in networks:
+        for network_uuid, address, fixed_mac in networks:
             # check if the fixed IP address is valid and
             # it actually belongs to the network
             if address is not None:
@@ -1117,6 +1128,10 @@ class NetworkManager(manager.SchedulerDependentManager):
                                             network_uuid=network_uuid)
                 if fixed_ip_ref['instance'] is not None:
                     raise exception.FixedIpAlreadyInUse(address=address)
+
+            if fixed_mac is not None:
+                if not utils.is_valid_mac(fixed_mac):
+                    raise exception.FixedMacInvalid(address=fixed_mac)
 
     def _get_networks_by_uuids(self, context, network_uuids):
         return self.db.network_get_all_by_uuids(context, network_uuids)
@@ -1164,7 +1179,7 @@ class FlatManager(NetworkManager):
         for network in networks:
             address = None
             if requested_networks is not None:
-                for address in (fixed_ip for (uuid, fixed_ip) in \
+                for address in (fixed_ip for (uuid, fixed_ip, fixed_mac) in \
                               requested_networks if network['uuid'] == uuid):
                     break
 

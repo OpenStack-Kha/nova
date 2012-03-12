@@ -220,9 +220,9 @@ class Controller(wsgi.Controller):
         networks = []
         for network in requested_networks:
             try:
-                network_uuid = network['uuid']
+                network_uuid = network.get('uuid', None)
 
-                if not utils.is_uuid_like(network_uuid):
+                if network_uuid is not None and not utils.is_uuid_like(network_uuid):
                     msg = _("Bad networks format: network uuid is not in"
                          " proper format (%s)") % network_uuid
                     raise exc.HTTPBadRequest(explanation=msg)
@@ -234,6 +234,15 @@ class Controller(wsgi.Controller):
                 if address is not None and not utils.is_valid_ipv4(address):
                     msg = _("Invalid fixed IP address (%s)") % address
                     raise exc.HTTPBadRequest(explanation=msg)
+
+                #fixed MAC address is optional
+                #if the fixed MAC address is not provided then
+                #a MAC address will be generated automatically
+                mac_address = network.get('fixed_mac', None)
+                if mac_address is not None and not utils.is_valid_mac(mac_address):
+                    msg = _("Invalid fixed MAC address (%s)") % mac_address
+                    raise exc.HTTPBadRequest(explanation=msg)
+
                 # check if the network id is already present in the list,
                 # we don't want duplicate networks to be passed
                 # at the boot time
@@ -243,7 +252,7 @@ class Controller(wsgi.Controller):
                                 % network_uuid
                         raise exc.HTTPBadRequest(explanation=expl)
 
-                networks.append((network_uuid, address))
+                networks.append((network_uuid, address, mac_address))
             except KeyError as key:
                 expl = _('Bad network format: missing %s') % key
                 raise exc.HTTPBadRequest(explanation=expl)
@@ -1064,6 +1073,8 @@ class ServerXMLDeserializer(wsgi.MetadataXMLDeserializer):
                     item["uuid"] = network_node.getAttribute("uuid")
                 if network_node.hasAttribute("fixed_ip"):
                     item["fixed_ip"] = network_node.getAttribute("fixed_ip")
+                if network_node.hasAttribute("fixed_mac"):
+                    item["fixed_mac"] = network_node.getAttribute("fixed_mac")
                 networks.append(item)
             return networks
         else:

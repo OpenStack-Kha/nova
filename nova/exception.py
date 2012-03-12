@@ -509,6 +509,8 @@ class NetworkNotFoundForProject(NotFound):
 class NetworkHostNotSet(NovaException):
     message = _("Host is not set to the network (%(network_id)s).")
 
+class NeedExactlyOneArbitraryNetwork(NovaException):
+    message = _("When specifying placement into the default network, only one network must exist")
 
 class DatastoreNotFound(NotFound):
     message = _("Could not find the datastore reference(s) which the VM uses.")
@@ -550,6 +552,9 @@ class FixedIpAlreadyInUse(NovaException):
 
 class FixedIpInvalid(Invalid):
     message = _("Fixed IP address %(address)s is invalid.")
+
+class FixedMacInvalid(Invalid):
+    message = _("Fixed MAC address %(address)s is invalid.")
 
 
 class NoMoreFixedIps(NovaException):
@@ -892,3 +897,4 @@ class WillNotSchedule(NovaException):
 class QuotaError(ApiError):
     """Quota Exceeded."""
     pass
+

@@ -663,6 +663,7 @@ class VirtualInterface(BASE, NovaBase):
     __tablename__ = 'virtual_interfaces'
     id = Column(Integer, primary_key=True)
     address = Column(String(255), unique=True)
+    fixed_mac = Column(String(17), unique=True)
     network_id = Column(Integer, nullable=False)
     instance_id = Column(Integer, nullable=False)
     uuid = Column(String(36))
