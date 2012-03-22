@@ -1308,13 +1308,25 @@ class VlanManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
                                    requested_networks=None):
         """Determine which networks an instance should connect to."""
         # get networks associated with project
+        def get_all_project_networks():
+            try:
+                return self.db.project_get_networks(context, project_id)
+            except exception.NoNetworksFound:
+                return []
+
         if requested_networks is not None and len(requested_networks) != 0:
-            network_uuids = [uuid for (uuid, fixed_ip) in requested_networks]
-            networks = self.db.network_get_all_by_uuids(context,
-                                                    network_uuids,
-                                                    project_id)
+            network_uuids = [uuid for (uuid, fixed_ip, fixed_mac) in requested_networks if uuid is not None]
+            if len(network_uuids) > 0:
+                networks = self.db.network_get_all_by_uuids(context,
+                    network_uuids,
+                    project_id)
+            else:
+                networks = get_all_project_networks()
+                if len(networks) != 1:
+                    raise exception.NeedExactlyOneArbitraryNetwork()
+                networks[0]['fixed_mac'] = requested_networks[0][2]
         else:
-            networks = self.db.project_get_networks(context, project_id)
+            networks = get_all_project_networks()
         return networks
 
     def create_networks(self, context, **kwargs):
