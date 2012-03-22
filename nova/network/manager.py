@@ -790,7 +790,10 @@ class NetworkManager(manager.SchedulerDependentManager):
             self.add_virtual_interface(context, instance_id, network['id'], network.get('fixed_mac', None))
 
     def add_virtual_interface(self, context, instance_id, network_id, fixed_mac):
-        vif = {'address': fixed_mac if fixed_mac is not None else self.generate_mac_address(),
+        def generate_mac_address():
+            return (fixed_mac if fixed_mac is not None else self.generate_mac_address())
+
+        vif = {'address': generate_mac_address(),
                    'instance_id': instance_id,
                    'network_id': network_id,
                    'uuid': str(utils.gen_uuid())}
@@ -799,7 +802,7 @@ class NetworkManager(manager.SchedulerDependentManager):
             try:
                 return self.db.virtual_interface_create(context, vif)
             except exception.VirtualInterfaceCreateException:
-                vif['address'] = self.generate_mac_address()
+                vif['address'] = generate_mac_address()
         else:
             self.db.virtual_interface_delete_by_instance(context,
                                                              instance_id)
@@ -1226,7 +1229,8 @@ class FlatDHCPManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
         """Sets up network on this host."""
         network_ref['dhcp_server'] = self._get_dhcp_ip(context, network_ref)
 
-        mac_address = self.generate_mac_address()
+        fixed_mac = network_ref.get('fixed_mac', None)
+        mac_address = fixed_mac if fixed_mac is not None else self.generate_mac_address()
         dev = self.driver.plug(network_ref, mac_address)
         self.driver.initialize_gateway_device(dev, network_ref)
 
@@ -1357,7 +1361,8 @@ class VlanManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
             address = network_ref['vpn_public_address']
         network_ref['dhcp_server'] = self._get_dhcp_ip(context, network_ref)
 
-        mac_address = self.generate_mac_address()
+        fixed_mac = network_ref.get('fixed_mac', None)
+        mac_address = fixed_mac if fixed_mac is not None else self.generate_mac_address()
         dev = self.driver.plug(network_ref, mac_address)
         self.driver.initialize_gateway_device(dev, network_ref)
 
