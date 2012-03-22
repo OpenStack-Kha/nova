@@ -791,7 +791,7 @@ class NetworkManager(manager.SchedulerDependentManager):
 
     def add_virtual_interface(self, context, instance_id, network_id, fixed_mac):
         def generate_mac_address():
-            return (fixed_mac if fixed_mac is not None else self.generate_mac_address())
+            return fixed_mac if fixed_mac is not None else self.generate_mac_address()
 
         vif = {'address': generate_mac_address(),
                    'instance_id': instance_id,

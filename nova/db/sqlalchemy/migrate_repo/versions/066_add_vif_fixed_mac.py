@@ -32,4 +32,4 @@ def upgrade(migrate_engine):
 def downgrade(migrate_engine):
     meta.bind = migrate_engine
     table = Table('virtual_interfaces', meta, autoload=True)
-    table.c.mac_address.drop()
+    table.drop_column(new_column)

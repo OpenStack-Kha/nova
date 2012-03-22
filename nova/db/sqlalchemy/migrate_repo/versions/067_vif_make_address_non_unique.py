@@ -15,18 +15,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.from sqlalchemy import *
 
+import migrate
+import migrate.changeset
 from sqlalchemy import Column, MetaData, Table, String
 
-
 meta = MetaData()
+
 
 def upgrade(migrate_engine):
     meta.bind = migrate_engine
     table = Table('virtual_interfaces', meta, autoload=True)
-    table.alter_column(column='address', unique=False)
+    migrate.UniqueConstraint(table.c.address, name='address').drop()
 
 
 def downgrade(migrate_engine):
     meta.bind = migrate_engine
     table = Table('virtual_interfaces', meta, autoload=True)
-    table.alter_column(column='address', unique=True)
+    migrate.UniqueConstraint(table.c.address, name='address').create()
