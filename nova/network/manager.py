@@ -321,33 +321,40 @@ class FloatingIP(object):
         rpc.called by network_api
         """
         instance_id = kwargs.get('instance_id')
+        # NOTE(francois.charlier): in some cases the instance might be
+        # deleted before the IPs are released, so we need to get deleted
+        # instances too
+        read_deleted_context = context.elevated(read_deleted='yes')
         LOG.debug(_("floating IP deallocation for instance |%s|"), instance_id,
-                                                               context=context)
-
+                                                   context=read_deleted_context)
+ 
         try:
-            fixed_ips = self.db.fixed_ip_get_by_instance(context, instance_id)
+            fixed_ips = self.db.fixed_ip_get_by_instance(read_deleted_context,
+                                                         instance_id)
         except exception.FixedIpNotFoundForInstance:
             fixed_ips = []
         # add to kwargs so we can pass to super to save a db lookup there
         kwargs['fixed_ips'] = fixed_ips
         for fixed_ip in fixed_ips:
             fixed_id = fixed_ip['id']
-            floating_ips = self.db.floating_ip_get_by_fixed_ip_id(context,
-                                                                  fixed_id)
+            floating_ips = \
+                self.db.floating_ip_get_by_fixed_ip_id(read_deleted_context,
+                                                       fixed_id)
             # disassociate floating ips related to fixed_ip
             for floating_ip in floating_ips:
                 address = floating_ip['address']
-                self.disassociate_floating_ip(context, address,
+                self.disassociate_floating_ip(read_deleted_context, address,
                                               affect_auto_assigned=True)
                 # deallocate if auto_assigned
                 if floating_ip['auto_assigned']:
-                    self.deallocate_floating_ip(context, address,
+                    self.deallocate_floating_ip(read_deleted_context, address,
                                                 affect_auto_assigned=True)
 
         # call the next inherited class's deallocate_for_instance()
         # which is currently the NetworkManager version
         # call this after so floating IPs are handled first
-        super(FloatingIP, self).deallocate_for_instance(context, **kwargs)
+        super(FloatingIP, self).deallocate_for_instance(read_deleted_context,
+                                                        **kwargs)
 
     def _floating_ip_owned_by_project(self, context, floating_ip):
         """Raises if floating ip does not belong to project"""
@@ -758,7 +765,7 @@ class NetworkManager(manager.SchedulerDependentManager):
 
     def _do_trigger_security_group_members_refresh_for_instance(self,
                                                                 instance_id):
-        admin_context = context.get_admin_context()
+        admin_context = context.get_admin_context(read_deleted='yes')
         instance_ref = self.db.instance_get(admin_context, instance_id)
         groups = instance_ref['security_groups']
         group_ids = [group['id'] for group in groups]
@@ -879,20 +886,24 @@ class NetworkManager(manager.SchedulerDependentManager):
         rpc.called by network_api
         kwargs can contain fixed_ips to circumvent another db lookup
         """
+        read_deleted_context = context.elevated(read_deleted='yes')
         instance_id = kwargs.pop('instance_id')
         try:
             fixed_ips = kwargs.get('fixed_ips') or \
-                  self.db.fixed_ip_get_by_instance(context, instance_id)
+                  self.db.fixed_ip_get_by_instance(read_deleted_context,
+                                                    instance_id)
         except exception.FixedIpNotFoundForInstance:
             fixed_ips = []
         LOG.debug(_("network deallocation for instance |%s|"), instance_id,
-                                                               context=context)
+                    context=read_deleted_context)
         # deallocate fixed ips
         for fixed_ip in fixed_ips:
-            self.deallocate_fixed_ip(context, fixed_ip['address'], **kwargs)
+            self.deallocate_fixed_ip(read_deleted_context,
+                                     fixed_ip['address'], **kwargs)
 
         # deallocate vifs (mac addresses)
-        self.db.virtual_interface_delete_by_instance(context, instance_id)
+        self.db.virtual_interface_delete_by_instance(read_deleted_context,
+                                                     instance_id)
 
     @wrap_check_policy
     def get_instance_nw_info(self, context, instance_id, instance_uuid,
