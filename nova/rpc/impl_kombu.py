@@ -102,7 +102,6 @@ class ConsumerBase(object):
         raise an exception
         """
         self.tag = str(self.tag_gen.next())
-
         options = {'consumer_tag': self.tag}
         options['nowait'] = kwargs.get('nowait', False)
         callback = kwargs.get('callback', self.callback)
@@ -178,7 +177,8 @@ class TopicConsumer(ConsumerBase):
         'channel' is the amqp channel to use
         'topic' is the topic to listen on
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         Other kombu options may be passed
         """
@@ -356,38 +356,27 @@ class Connection(object):
         self.interval_max = 30
         self.memory_transport = False
 
-<<<<<<< HEAD
-        self.params_list = []
-        for adr in FLAGS.rabbit_addresses.split(','):
-            hostname, port = adr.split(':')
-            params =  dict(hostname=hostname,
-                          port=port,
-                          userid=FLAGS.rabbit_userid,
-                          password=FLAGS.rabbit_password,
-                          virtual_host=FLAGS.rabbit_virtual_host)
-            if FLAGS.fake_rabbit:
-                params['transport'] = 'memory'
-            self.params_list.append(params)
-=======
         if server_params is None:
             server_params = {}
 
         # Keys to translate from server_params to kombu params
         server_params_to_kombu_params = {'username': 'userid'}
 
-        params = {}
-        for sp_key, value in server_params.iteritems():
-            p_key = server_params_to_kombu_params.get(sp_key, sp_key)
-            params[p_key] = value
-
-        params.setdefault('hostname', FLAGS.rabbit_host)
-        params.setdefault('port', FLAGS.rabbit_port)
-        params.setdefault('userid', FLAGS.rabbit_userid)
-        params.setdefault('password', FLAGS.rabbit_password)
-        params.setdefault('virtual_host', FLAGS.rabbit_virtual_host)
-
-        self.params = params
->>>>>>> source/stable/essex
+        self.params_list = []
+        for adr in FLAGS.rabbit_addresses:
+            hostname, port = adr.split(':')
+            params = {}
+            for sp_key, value in server_params.iteritems():
+                p_key = server_params_to_kombu_params.get(sp_key, sp_key)
+                params[p_key] = value
+            params.setdefault('hostname', hostname)
+            params.setdefault('port', int(port))
+            params.setdefault('userid', FLAGS.rabbit_userid)
+            params.setdefault('password', FLAGS.rabbit_password)
+            params.setdefault('virtual_host', FLAGS.rabbit_virtual_host)
+            if FLAGS.fake_rabbit:
+                params['transport'] = 'memory'
+            self.params_list.append(params)
 
         if FLAGS.fake_rabbit:
             self.memory_transport = True
@@ -400,9 +389,6 @@ class Connection(object):
         self.connection = None
         self.reconnect()
 
-<<<<<<< HEAD
-    def _connect(self, params):
-=======
     def _fetch_ssl_params(self):
         """Handles fetching what ssl params
         should be used for the connection (if any)"""
@@ -428,8 +414,7 @@ class Connection(object):
             # Return the extended behavior
             return ssl_params
 
-    def _connect(self):
->>>>>>> source/stable/essex
+    def _connect(self, params):
         """Connect to rabbit.  Re-establish any queues that may have
         been declared before if we are reconnecting.  Exceptions should
         be handled by the caller.
@@ -458,12 +443,7 @@ class Connection(object):
             self.channel._new_queue('ae.undeliver')
         for consumer in self.consumers:
             consumer.reconnect(self.channel)
-        LOG.info(_('Connected to AMQP server on '
-<<<<<<< HEAD
-                '%(hostname)s:%(port)d' % params))
-=======
-                '%(hostname)s:%(port)d') % self.params)
->>>>>>> source/stable/essex
+        LOG.info(_('Connected to AMQP server on %(hostname)s:%(port)d') % params)
 
     def reconnect(self):
         """Handles reconnecting and re-establishing queues.
