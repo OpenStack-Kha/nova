@@ -57,28 +57,34 @@ LOG = rpc_common.LOG
 class ConsumerBase(object):
     """Consumer base class."""
 
-    def __init__(self, channel, callback, tag, **kwargs):
+    def __init__(self, channel, callback, tag_gen, **kwargs):
         """Declare a queue on an amqp channel.
 
         'channel' is the amqp channel to use
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         queue name, exchange name, and other kombu options are
         passed in here as a dictionary.
         """
         self.callback = callback
-        self.tag = str(tag)
+        self.tag_gen = tag_gen
+        self.tag = None
         self.kwargs = kwargs
         self.queue = None
+        self.reconsume = None
         self.reconnect(channel)
 
     def reconnect(self, channel):
         """Re-declare the queue after a rabbit reconnect"""
         self.channel = channel
         self.kwargs['channel'] = channel
+        self.kwargs['queue_arguments'] = { 'x-ha-policy' : 'all' }
         self.queue = kombu.entity.Queue(**self.kwargs)
         self.queue.declare()
+        if self.reconsume is not None:
+            self.reconsume()
 
     def consume(self, *args, **kwargs):
         """Actually declare the consumer on the amqp channel.  This will
@@ -96,6 +102,7 @@ class ConsumerBase(object):
         raise an exception
         """
 
+        self.tag = str(self.tag_gen.next())
         options = {'consumer_tag': self.tag}
         options['nowait'] = kwargs.get('nowait', False)
         callback = kwargs.get('callback', self.callback)
@@ -111,9 +118,13 @@ class ConsumerBase(object):
                 LOG.exception(_("Failed to process message... skipping it."))
 
         self.queue.consume(*args, callback=_callback, **options)
+        self.reconsume = lambda: self.consume(*args, **options)
 
     def cancel(self):
         """Cancel the consuming from the queue, if it has started"""
+        if self.tag is None:
+            return
+
         try:
             self.queue.cancel(self.tag)
         except KeyError, e:
@@ -121,18 +132,20 @@ class ConsumerBase(object):
             if str(e) != "u'%s'" % self.tag:
                 raise
         self.queue = None
+        self.reconsume = None
 
 
 class DirectConsumer(ConsumerBase):
     """Queue/consumer class for 'direct'"""
 
-    def __init__(self, channel, msg_id, callback, tag, **kwargs):
+    def __init__(self, channel, msg_id, callback, tag_gen, **kwargs):
         """Init a 'direct' queue.
 
         'channel' is the amqp channel to use
         'msg_id' is the msg_id to listen on
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         Other kombu options may be passed
         """
@@ -149,7 +162,7 @@ class DirectConsumer(ConsumerBase):
         super(DirectConsumer, self).__init__(
                 channel,
                 callback,
-                tag,
+                tag_gen,
                 name=msg_id,
                 exchange=exchange,
                 routing_key=msg_id,
@@ -159,13 +172,14 @@ class DirectConsumer(ConsumerBase):
 class TopicConsumer(ConsumerBase):
     """Consumer class for 'topic'"""
 
-    def __init__(self, channel, topic, callback, tag, **kwargs):
+    def __init__(self, channel, topic, callback, tag_gen, **kwargs):
         """Init a 'topic' queue.
 
         'channel' is the amqp channel to use
         'topic' is the topic to listen on
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         Other kombu options may be passed
         """
@@ -182,7 +196,7 @@ class TopicConsumer(ConsumerBase):
         super(TopicConsumer, self).__init__(
                 channel,
                 callback,
-                tag,
+                tag_gen,
                 name=topic,
                 exchange=exchange,
                 routing_key=topic,
@@ -192,13 +206,14 @@ class TopicConsumer(ConsumerBase):
 class FanoutConsumer(ConsumerBase):
     """Consumer class for 'fanout'"""
 
-    def __init__(self, channel, topic, callback, tag, **kwargs):
+    def __init__(self, channel, topic, callback, tag_gen, **kwargs):
         """Init a 'fanout' queue.
 
         'channel' is the amqp channel to use
         'topic' is the topic to listen on
         'callback' is the callback to call when messages are received
-        'tag' is a unique ID for the consumer on the channel
+        'tag_gen' is a generator of unique IDs for the consumer on the channel,
+        it will be sampled every time this consumer reconnects.
 
         Other kombu options may be passed
         """
@@ -219,7 +234,7 @@ class FanoutConsumer(ConsumerBase):
         super(FanoutConsumer, self).__init__(
                 channel,
                 callback,
-                tag,
+                tag_gen,
                 name=queue_name,
                 exchange=exchange,
                 routing_key=topic,
@@ -348,21 +363,23 @@ class Connection(object):
         # Keys to translate from server_params to kombu params
         server_params_to_kombu_params = {'username': 'userid'}
 
-        params = {}
-        for sp_key, value in server_params.iteritems():
-            p_key = server_params_to_kombu_params.get(sp_key, sp_key)
-            params[p_key] = value
-
-        params.setdefault('hostname', FLAGS.rabbit_host)
-        params.setdefault('port', FLAGS.rabbit_port)
-        params.setdefault('userid', FLAGS.rabbit_userid)
-        params.setdefault('password', FLAGS.rabbit_password)
-        params.setdefault('virtual_host', FLAGS.rabbit_virtual_host)
-
-        self.params = params
+        self.params_list = []
+        for adr in FLAGS.rabbit_addresses:
+            hostname, port = adr.split(':')
+            params = {}
+            for sp_key, value in server_params.iteritems():
+                p_key = server_params_to_kombu_params.get(sp_key, sp_key)
+                params[p_key] = value
+            params.setdefault('hostname', hostname)
+            params.setdefault('port', int(port))
+            params.setdefault('userid', FLAGS.rabbit_userid)
+            params.setdefault('password', FLAGS.rabbit_password)
+            params.setdefault('virtual_host', FLAGS.rabbit_virtual_host)
+            if FLAGS.fake_rabbit:
+                params['transport'] = 'memory'
+            self.params_list.append(params)
 
         if FLAGS.fake_rabbit:
-            self.params['transport'] = 'memory'
             self.memory_transport = True
         else:
             self.memory_transport = False
@@ -398,14 +415,14 @@ class Connection(object):
             # Return the extended behavior
             return ssl_params
 
-    def _connect(self):
+    def _connect(self, params):
         """Connect to rabbit.  Re-establish any queues that may have
         been declared before if we are reconnecting.  Exceptions should
         be handled by the caller.
         """
         if self.connection:
             LOG.info(_("Reconnecting to AMQP server on "
-                    "%(hostname)s:%(port)d") % self.params)
+                    "%(hostname)s:%(port)d") % params)
             try:
                 self.connection.close()
             except self.connection_errors:
@@ -414,7 +431,7 @@ class Connection(object):
             # it shouldn't be doing any network operations, yet.
             self.connection = None
         self.connection = kombu.connection.BrokerConnection(
-                **self.params)
+                **params)
         self.connection_errors = self.connection.connection_errors
         if self.memory_transport:
             # Kludge to speed up tests.
@@ -427,8 +444,7 @@ class Connection(object):
             self.channel._new_queue('ae.undeliver')
         for consumer in self.consumers:
             consumer.reconnect(self.channel)
-        LOG.info(_('Connected to AMQP server on %(hostname)s:%(port)d'),
-                 self.params)
+        LOG.info(_('Connected to AMQP server on %(hostname)s:%(port)d') % params)
 
     def reconnect(self):
         """Handles reconnecting and re-establishing queues.
@@ -441,9 +457,10 @@ class Connection(object):
 
         attempt = 0
         while True:
+            params = self.params_list[attempt % len(self.params_list)]
             attempt += 1
             try:
-                self._connect()
+                self._connect(params)
                 return
             except (self.connection_errors, IOError), e:
                 pass
@@ -460,7 +477,7 @@ class Connection(object):
             log_info = {}
             log_info['err_str'] = str(e)
             log_info['max_retries'] = self.max_retries
-            log_info.update(self.params)
+            log_info.update(params)
 
             if self.max_retries and attempt == self.max_retries:
                 LOG.exception(_('Unable to connect to AMQP server on '
@@ -535,7 +552,7 @@ class Connection(object):
 
         def _declare_consumer():
             consumer = consumer_cls(self.channel, topic, callback,
-                    self.consumer_num.next())
+                    self.consumer_num)
             self.consumers.append(consumer)
             return consumer
 
