@@ -30,7 +30,7 @@ from nova.tests.integrated.api import client
 from nova import utils
 
 
-LOG = logging.getLogger('nova.tests.integrated')
+LOG = logging.getLogger(__name__)
 
 
 def generate_random_alphanumeric(length):
@@ -69,6 +69,8 @@ class _IntegratedTestBase(test.TestCase):
             image_id = str(image_href).split('/')[-1]
             return (nova.image.fake.FakeImageService(), image_id)
         self.stubs.Set(nova.image, 'get_image_service', fake_get_image_service)
+        self.flags(compute_scheduler_driver='nova.scheduler.'
+                    'chance.ChanceScheduler')
 
         # set up services
         self.compute = self.start_service('compute')

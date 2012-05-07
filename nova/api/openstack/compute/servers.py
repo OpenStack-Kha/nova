@@ -33,11 +33,10 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 from nova.rpc import common as rpc_common
-from nova.scheduler import api as scheduler_api
 from nova import utils
 
 
-LOG = logging.getLogger('nova.api.openstack.compute.servers')
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 
 
@@ -223,9 +222,9 @@ class CommonDeserializer(wsgi.MetadataXMLDeserializer):
             security_groups = []
             for sg_node in self.find_children_named(node, "security_group"):
                 item = {}
-                name_node = self.find_first_child_named(sg_node, "name")
-                if name_node:
-                    item["name"] = self.extract_text(name_node)
+                name = self.find_attribute_or_element(sg_node, 'name')
+                if name:
+                    item["name"] = name
                     security_groups.append(item)
             return security_groups
         else:
@@ -303,7 +302,7 @@ class ActionDeserializer(CommonDeserializer):
             raise AttributeError("No flavorRef was specified in request")
 
         if node.hasAttribute("auto_disk_config"):
-            rezise['auto_disk_config'] = node.getAttribute("auto_disk_config")
+            resize['auto_disk_config'] = node.getAttribute("auto_disk_config")
 
         return resize
 
@@ -356,7 +355,7 @@ class Controller(wsgi.Controller):
         link = filter(lambda l: l['rel'] == 'self',
                       robj.obj['server']['links'])
         if link:
-            robj['Location'] = link[0]['href']
+            robj['Location'] = link[0]['href'].encode('utf-8')
 
         # Convenience return
         return robj
@@ -411,24 +410,20 @@ class Controller(wsgi.Controller):
         """
 
         search_opts = {}
-        search_opts.update(req.str_GET)
+        search_opts.update(req.GET)
 
         context = req.environ['nova.context']
         remove_invalid_options(context, search_opts,
                 self._get_server_search_options())
 
-        # Convert local_zone_only into a boolean
-        search_opts['local_zone_only'] = utils.bool_from_str(
-                search_opts.get('local_zone_only', False))
-
-        # If search by 'status', we need to convert it to 'vm_state'
-        # to pass on to child zones.
-        if 'status' in search_opts:
-            status = search_opts['status']
+        # Verify search by 'status' contains a valid status.
+        # Convert it to filter by vm_state for compute_api.
+        status = search_opts.pop('status', None)
+        if status is not None:
             state = common.vm_state_from_status(status)
             if state is None:
-                reason = _('Invalid server status: %(status)s') % locals()
-                raise exception.InvalidInput(reason=reason)
+                msg = _('Invalid server status: %(status)s') % locals()
+                raise exc.HTTPBadRequest(explanation=msg)
             search_opts['vm_state'] = state
 
         if 'changes-since' in search_opts:
@@ -474,7 +469,7 @@ class Controller(wsgi.Controller):
     def _get_server(self, context, instance_uuid):
         """Utility function for looking up an instance by uuid"""
         try:
-            return self.compute_api.routing_get(context, instance_uuid)
+            return self.compute_api.get(context, instance_uuid)
         except exception.NotFound:
             raise exc.HTTPNotFound()
 
@@ -496,12 +491,9 @@ class Controller(wsgi.Controller):
             "InstanceLimitExceeded": error.message,
         }
 
-        expl = code_mappings.get(error.code)
-        if expl:
-            raise exc.HTTPRequestEntityTooLarge(explanation=expl,
-                                                headers={'Retry-After': 0})
-        # if the original error is okay, just reraise it
-        raise exc.HTTPRequestEntityTooLarge(explanation=error.msg,
+        code = error.kwargs['code']
+        expl = code_mappings.get(code, error.message) % error.kwargs
+        raise exc.HTTPRequestEntityTooLarge(explanation=expl,
                                             headers={'Retry-After': 0})
 
     def _validate_server_name(self, value):
@@ -511,6 +503,10 @@ class Controller(wsgi.Controller):
 
         if value.strip() == '':
             msg = _("Server name is an empty string")
+            raise exc.HTTPBadRequest(explanation=msg)
+
+        if not len(value) < 256:
+            msg = _("Server name must be less than 256 characters.")
             raise exc.HTTPBadRequest(explanation=msg)
 
     def _get_injected_files(self, personality):
@@ -567,8 +563,8 @@ class Controller(wsgi.Controller):
                 # at the boot time
                 for id, ip in networks:
                     if id == network_uuid:
-                        expl = _("Duplicate networks (%s) are not allowed")\
-                                % network_uuid
+                        expl = (_("Duplicate networks (%s) are not allowed") %
+                                network_uuid)
                         raise exc.HTTPBadRequest(explanation=expl)
 
                 networks.append((network_uuid, address))
@@ -602,17 +598,15 @@ class Controller(wsgi.Controller):
         try:
             socket.inet_pton(socket.AF_INET6, address)
         except socket.error:
-            expl = _('accessIPv4 is not proper IPv4 format')
+            expl = _('accessIPv6 is not proper IPv6 format')
             raise exc.HTTPBadRequest(explanation=expl)
 
     @wsgi.serializers(xml=ServerTemplate)
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def show(self, req, id):
         """ Returns server details by server id """
         try:
             context = req.environ['nova.context']
-            instance = self.compute_api.routing_get(context, id)
+            instance = self.compute_api.get(context, id)
             self._add_instance_faults(context, [instance])
             return self._view_builder.show(req, instance)
         except exception.NotFound:
@@ -644,14 +638,7 @@ class Controller(wsgi.Controller):
         name = name.strip()
 
         image_href = self._image_ref_from_req_data(body)
-
-        # If the image href was generated by nova api, strip image_href
-        # down to an id and use the default glance connection params
-        image_href = image_href.split('/').pop()
-
-        if not utils.is_uuid_like(str(image_href)):
-            msg = _("Invalid imageRef provided.")
-            raise exc.HTTPBadRequest(explanation=msg)
+        image_href = self._image_uuid_from_href(image_href)
 
         personality = server_dict.get('personality')
         config_drive = server_dict.get('config_drive')
@@ -688,8 +675,6 @@ class Controller(wsgi.Controller):
             msg = _("Invalid flavorRef provided.")
             raise exc.HTTPBadRequest(explanation=msg)
 
-        zone_blob = server_dict.get('blob')
-
         # optional openstack extensions:
         key_name = server_dict.get('key_name')
         user_data = server_dict.get('user_data')
@@ -701,14 +686,6 @@ class Controller(wsgi.Controller):
         name = name.strip()
 
         block_device_mapping = self._get_block_device_mapping(server_dict)
-
-        # Only allow admins to specify their own reservation_ids
-        # This is really meant to allow zones to work.
-        reservation_id = server_dict.get('reservation_id')
-        if all([reservation_id is not None,
-                reservation_id != '',
-                not context.is_admin]):
-            reservation_id = None
 
         ret_resv_id = server_dict.get('return_reservation_id', False)
 
@@ -726,8 +703,8 @@ class Controller(wsgi.Controller):
         scheduler_hints = server_dict.get('scheduler_hints', {})
 
         try:
-            inst_type = \
-                    instance_types.get_instance_type_by_flavor_id(flavor_id)
+            _get_inst_type = instance_types.get_instance_type_by_flavor_id
+            inst_type = _get_inst_type(flavor_id)
 
             (instances, resv_id) = self.compute_api.create(context,
                             inst_type,
@@ -740,8 +717,6 @@ class Controller(wsgi.Controller):
                             access_ip_v6=access_ip_v6,
                             injected_files=injected_files,
                             admin_password=password,
-                            zone_blob=zone_blob,
-                            reservation_id=reservation_id,
                             min_count=min_count,
                             max_count=max_count,
                             requested_networks=requested_networks,
@@ -770,8 +745,8 @@ class Controller(wsgi.Controller):
         except exception.SecurityGroupNotFound as error:
             raise exc.HTTPBadRequest(explanation=unicode(error))
         except rpc_common.RemoteError as err:
-            msg = "%(err_type)s: %(err_msg)s" % \
-                  {'err_type': err.exc_type, 'err_msg': err.value}
+            msg = "%(err_type)s: %(err_msg)s" % {'err_type': err.exc_type,
+                                                 'err_msg': err.value}
             raise exc.HTTPBadRequest(explanation=msg)
         # Let the caller deal with unhandled exceptions.
 
@@ -799,7 +774,6 @@ class Controller(wsgi.Controller):
             self.compute_api.delete(context, instance)
 
     @wsgi.serializers(xml=ServerTemplate)
-    @scheduler_api.redirect_handler
     def update(self, req, id, body):
         """Update server then pass on to version-specific controller"""
         if len(req.body) == 0:
@@ -831,9 +805,8 @@ class Controller(wsgi.Controller):
                     body['server']['auto_disk_config'])
             update_dict['auto_disk_config'] = auto_disk_config
 
-        instance = self.compute_api.routing_get(ctxt, id)
-
         try:
+            instance = self.compute_api.get(ctxt, id)
             self.compute_api.update(ctxt, instance, **update_dict)
         except exception.NotFound:
             raise exc.HTTPNotFound()
@@ -847,8 +820,6 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('confirmResize')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def _action_confirm_resize(self, req, id, body):
         context = req.environ['nova.context']
         instance = self._get_server(context, id)
@@ -869,8 +840,6 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('revertResize')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def _action_revert_resize(self, req, id, body):
         context = req.environ['nova.context']
         instance = self._get_server(context, id)
@@ -891,19 +860,17 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('reboot')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def _action_reboot(self, req, id, body):
         if 'reboot' in body and 'type' in body['reboot']:
             valid_reboot_types = ['HARD', 'SOFT']
             reboot_type = body['reboot']['type'].upper()
             if not valid_reboot_types.count(reboot_type):
                 msg = _("Argument 'type' for reboot is not HARD or SOFT")
-                LOG.exception(msg)
+                LOG.error(msg)
                 raise exc.HTTPBadRequest(explanation=msg)
         else:
             msg = _("Missing argument 'type' for reboot")
-            LOG.exception(msg)
+            LOG.error(msg)
             raise exc.HTTPBadRequest(explanation=msg)
 
         context = req.environ['nova.context']
@@ -939,8 +906,6 @@ class Controller(wsgi.Controller):
         return webob.Response(status_int=202)
 
     @wsgi.response(204)
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def delete(self, req, id):
         """ Destroys a server """
         try:
@@ -961,10 +926,21 @@ class Controller(wsgi.Controller):
 
     def _image_ref_from_req_data(self, data):
         try:
-            return data['server']['imageRef']
+            return unicode(data['server']['imageRef'])
         except (TypeError, KeyError):
             msg = _("Missing imageRef attribute")
             raise exc.HTTPBadRequest(explanation=msg)
+
+    def _image_uuid_from_href(self, image_href):
+        # If the image href was generated by nova api, strip image_href
+        # down to an id and use the default glance connection params
+        image_uuid = image_href.split('/').pop()
+
+        if not utils.is_uuid_like(image_uuid):
+            msg = _("Invalid imageRef provided.")
+            raise exc.HTTPBadRequest(explanation=msg)
+
+        return image_uuid
 
     def _flavor_id_from_req_data(self, data):
         try:
@@ -979,8 +955,6 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('changePassword')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def _action_change_password(self, req, id, body):
         context = req.environ['nova.context']
         if (not 'changePassword' in body
@@ -1002,7 +976,7 @@ class Controller(wsgi.Controller):
         """Ensure that we can work with the metadata given."""
         try:
             metadata.iteritems()
-        except AttributeError as ex:
+        except AttributeError:
             msg = _("Unable to parse metadata key/value pairs.")
             LOG.debug(msg)
             raise exc.HTTPBadRequest(explanation=msg)
@@ -1011,8 +985,6 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('resize')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def _action_resize(self, req, id, body):
         """ Resizes a given instance to the flavor size requested """
         try:
@@ -1034,8 +1006,6 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('rebuild')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     def _action_rebuild(self, req, id, body):
         """Rebuild an instance with the given attributes"""
         try:
@@ -1048,6 +1018,8 @@ class Controller(wsgi.Controller):
         except (KeyError, TypeError):
             msg = _("Could not parse imageRef from request.")
             raise exc.HTTPBadRequest(explanation=msg)
+
+        image_href = self._image_uuid_from_href(image_href)
 
         try:
             password = body['adminPass']
@@ -1098,7 +1070,7 @@ class Controller(wsgi.Controller):
         except exception.InstanceNotFound:
             msg = _("Instance could not be found")
             raise exc.HTTPNotFound(explanation=msg)
-        except exception.ImageNotFound as error:
+        except exception.ImageNotFound:
             msg = _("Cannot find image for rebuild")
             raise exc.HTTPBadRequest(explanation=msg)
 
@@ -1119,8 +1091,6 @@ class Controller(wsgi.Controller):
     @wsgi.serializers(xml=FullServerTemplate)
     @wsgi.deserializers(xml=ActionDeserializer)
     @wsgi.action('createImage')
-    @exception.novaclient_converter
-    @scheduler_api.redirect_handler
     @common.check_snapshots_enabled
     def _action_create_image(self, req, id, body):
         """Snapshot a server instance."""
@@ -1177,8 +1147,8 @@ class Controller(wsgi.Controller):
 
     def _get_server_search_options(self):
         """Return server search options allowed by non-admin"""
-        return ('reservation_id', 'name', 'local_zone_only',
-                'status', 'image', 'flavor', 'changes-since')
+        return ('reservation_id', 'name', 'status', 'image', 'flavor',
+                'changes-since')
 
 
 def create_resource():

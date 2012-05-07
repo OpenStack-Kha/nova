@@ -135,6 +135,7 @@ class ComputeNode(BASE, NovaBase):
     local_gb_used = Column(Integer)
     hypervisor_type = Column(Text)
     hypervisor_version = Column(Integer)
+    hypervisor_hostname = Column(String(255))
 
     # Free Ram, amount of activity (resize, migration, boot, etc) and
     # the number of running VM's are a good starting point for what's
@@ -277,6 +278,9 @@ class Instance(BASE, NovaBase):
     # EC2 disable_api_termination
     disable_terminate = Column(Boolean(), default=False, nullable=False)
 
+    # OpenStack compute cell name
+    cell_name = Column(String(255))
+
 
 class InstanceInfoCache(BASE, NovaBase):
     """
@@ -293,35 +297,7 @@ class InstanceInfoCache(BASE, NovaBase):
     instance = relationship(Instance,
                             backref=backref('info_cache', uselist=False),
                             foreign_keys=instance_id,
-                            primaryjoin='and_('
-                              'InstanceInfoCache.instance_id == Instance.uuid,'
-                              'InstanceInfoCache.deleted == False)')
-
-
-class VirtualStorageArray(BASE, NovaBase):
-    """
-    Represents a virtual storage array supplying block storage to instances.
-    """
-    __tablename__ = 'virtual_storage_arrays'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    @property
-    def name(self):
-        return FLAGS.vsa_name_template % self.id
-
-    # User editable field for display in user-facing UIs
-    display_name = Column(String(255))
-    display_description = Column(String(255))
-
-    project_id = Column(String(255))
-    availability_zone = Column(String(255))
-
-    instance_type_id = Column(Integer, ForeignKey('instance_types.id'))
-    image_ref = Column(String(255))
-    vc_count = Column(Integer, default=0)   # number of requested VC instances
-    vol_count = Column(Integer, default=0)  # total number of BE volumes
-    status = Column(String(255))
+                            primaryjoin=instance_id == Instance.uuid)
 
 
 class InstanceActions(BASE, NovaBase):
@@ -337,12 +313,12 @@ class InstanceTypes(BASE, NovaBase):
     """Represent possible instance_types or flavor of VM offered"""
     __tablename__ = "instance_types"
     id = Column(Integer, primary_key=True)
-    name = Column(String(255), unique=True)
+    name = Column(String(255))
     memory_mb = Column(Integer)
     vcpus = Column(Integer)
     root_gb = Column(Integer)
     ephemeral_gb = Column(Integer)
-    flavorid = Column(String(255), unique=True)
+    flavorid = Column(String(255))
     swap = Column(Integer, nullable=False, default=0)
     rxtx_factor = Column(Float, nullable=False, default=1)
     vcpu_weight = Column(Integer, nullable=True)
@@ -350,14 +326,10 @@ class InstanceTypes(BASE, NovaBase):
     instances = relationship(Instance,
                            backref=backref('instance_type', uselist=False),
                            foreign_keys=id,
-                           primaryjoin='and_(Instance.instance_type_id == '
-                                       'InstanceTypes.id)')
-
-    vsas = relationship(VirtualStorageArray,
-                       backref=backref('vsa_instance_type', uselist=False),
-                       foreign_keys=id,
-                       primaryjoin='and_(VirtualStorageArray.instance_type_id'
-                                   ' == InstanceTypes.id)')
+                           primaryjoin='and_('
+                               'Instance.instance_type_id == '
+                               'InstanceTypes.id, '
+                               'InstanceTypes.deleted == False)')
 
 
 class Volume(BASE, NovaBase):
@@ -419,13 +391,14 @@ class VolumeTypes(BASE, NovaBase):
     """Represent possible volume_types of volumes offered"""
     __tablename__ = "volume_types"
     id = Column(Integer, primary_key=True)
-    name = Column(String(255), unique=True)
+    name = Column(String(255))
 
     volumes = relationship(Volume,
                            backref=backref('volume_type', uselist=False),
                            foreign_keys=id,
-                           primaryjoin='and_(Volume.volume_type_id == '
-                                       'VolumeTypes.id)')
+                           primaryjoin='and_('
+                               'Volume.volume_type_id == VolumeTypes.id, '
+                               'VolumeTypes.deleted == False)')
 
 
 class VolumeTypeExtraSpecs(BASE, NovaBase):
@@ -630,8 +603,10 @@ class Migration(BASE, NovaBase):
     """Represents a running host-to-host migration."""
     __tablename__ = 'migrations'
     id = Column(Integer, primary_key=True, nullable=False)
+    # NOTE(tr3buchet): the ____compute variables are instance['host']
     source_compute = Column(String(255))
     dest_compute = Column(String(255))
+    # NOTE(tr3buchet): dest_host, btw, is an ip address
     dest_host = Column(String(255))
     old_instance_type_id = Column(Integer())
     new_instance_type_id = Column(Integer())
@@ -862,9 +837,9 @@ class InstanceTypeExtraSpecs(BASE, NovaBase):
                  'InstanceTypeExtraSpecs.deleted == False)')
 
 
-class Zone(BASE, NovaBase):
-    """Represents a child zone of this zone."""
-    __tablename__ = 'zones'
+class Cell(BASE, NovaBase):
+    """Represents parent and child cells of this cell."""
+    __tablename__ = 'cells'
     id = Column(Integer, primary_key=True)
     name = Column(String(255))
     api_url = Column(String(255))
@@ -872,15 +847,10 @@ class Zone(BASE, NovaBase):
     password = Column(String(255))
     weight_offset = Column(Float(), default=0.0)
     weight_scale = Column(Float(), default=1.0)
-
-
-class Aggregate(BASE, NovaBase):
-    """Represents a cluster of hosts that exists in this zone."""
-    __tablename__ = 'aggregates'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(255), unique=True)
-    operational_state = Column(String(255), nullable=False)
-    availability_zone = Column(String(255), nullable=False)
+    is_parent = Column(Boolean())
+    rpc_host = Column(String(255))
+    rpc_port = Column(Integer())
+    rpc_virtual_host = Column(String(255))
 
 
 class AggregateHost(BASE, NovaBase):
@@ -889,11 +859,6 @@ class AggregateHost(BASE, NovaBase):
     id = Column(Integer, primary_key=True, autoincrement=True)
     host = Column(String(255), unique=True)
     aggregate_id = Column(Integer, ForeignKey('aggregates.id'), nullable=False)
-    aggregate = relationship(Aggregate, backref=backref('aggregates'),
-                             foreign_keys=aggregate_id,
-                             primaryjoin='and_('
-                                  'AggregateHost.aggregate_id == Aggregate.id,'
-                                  'AggregateHost.deleted == False)')
 
 
 class AggregateMetadata(BASE, NovaBase):
@@ -903,11 +868,46 @@ class AggregateMetadata(BASE, NovaBase):
     key = Column(String(255), nullable=False)
     value = Column(String(255), nullable=False)
     aggregate_id = Column(Integer, ForeignKey('aggregates.id'), nullable=False)
-    aggregate = relationship(Aggregate, backref="metadata",
-                             foreign_keys=aggregate_id,
-                             primaryjoin='and_('
-                              'AggregateMetadata.aggregate_id == Aggregate.id,'
-                              'AggregateMetadata.deleted == False)')
+
+
+class Aggregate(BASE, NovaBase):
+    """Represents a cluster of hosts that exists in this zone."""
+    __tablename__ = 'aggregates'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True)
+    operational_state = Column(String(255), nullable=False)
+    availability_zone = Column(String(255), nullable=False)
+    _hosts = relationship(AggregateHost,
+                          secondary="aggregate_hosts",
+                          primaryjoin='and_('
+                                 'Aggregate.id == AggregateHost.aggregate_id,'
+                                 'AggregateHost.deleted == False,'
+                                 'Aggregate.deleted == False)',
+                         secondaryjoin='and_('
+                                'AggregateHost.aggregate_id == Aggregate.id, '
+                                'AggregateHost.deleted == False,'
+                                'Aggregate.deleted == False)',
+                         backref='aggregates')
+
+    _metadata = relationship(AggregateMetadata,
+                         secondary="aggregate_metadata",
+                         primaryjoin='and_('
+                             'Aggregate.id == AggregateMetadata.aggregate_id,'
+                             'AggregateMetadata.deleted == False,'
+                             'Aggregate.deleted == False)',
+                         secondaryjoin='and_('
+                             'AggregateMetadata.aggregate_id == Aggregate.id, '
+                             'AggregateMetadata.deleted == False,'
+                             'Aggregate.deleted == False)',
+                         backref='aggregates')
+
+    @property
+    def hosts(self):
+        return [h.host for h in self._hosts]
+
+    @property
+    def metadetails(self):
+        return dict([(m.key, m.value) for m in self._metadata])
 
 
 class AgentBuild(BASE, NovaBase):
@@ -926,7 +926,6 @@ class BandwidthUsage(BASE, NovaBase):
     """Cache for instance bandwidth usage data pulled from the hypervisor"""
     __tablename__ = 'bw_usage_cache'
     id = Column(Integer, primary_key=True, nullable=False)
-    instance_id = Column(Integer, nullable=False)
     mac = Column(String(255), nullable=False)
     start_period = Column(DateTime, nullable=False)
     last_refreshed = Column(DateTime)
@@ -986,15 +985,40 @@ def register_models():
     connection is lost and needs to be reestablished.
     """
     from sqlalchemy import create_engine
-    models = (Service, Instance, InstanceActions, InstanceTypes,
-              Volume, IscsiTarget, FixedIp, FloatingIp,
-              Network, SecurityGroup, SecurityGroupIngressRule,
-              SecurityGroupInstanceAssociation, AuthToken, User,
-              Project, Certificate, ConsolePool, Console, Zone,
-              VolumeMetadata, VolumeTypes, VolumeTypeExtraSpecs,
-              AgentBuild, InstanceMetadata, InstanceTypeExtraSpecs, Migration,
-              VirtualStorageArray, SMFlavors, SMBackendConf, SMVolume,
-              InstanceFault)
+    models = (AgentBuild,
+              Aggregate,
+              AggregateHost,
+              AggregateMetadata,
+              AuthToken,
+              Certificate,
+              Cell,
+              Console,
+              ConsolePool,
+              FixedIp,
+              FloatingIp,
+              Instance,
+              InstanceActions,
+              InstanceFault,
+              InstanceMetadata,
+              InstanceTypeExtraSpecs,
+              InstanceTypes,
+              IscsiTarget,
+              Migration,
+              Network,
+              Project,
+              SecurityGroup,
+              SecurityGroupIngressRule,
+              SecurityGroupInstanceAssociation,
+              Service,
+              SMBackendConf,
+              SMFlavors,
+              SMVolume,
+              User,
+              Volume,
+              VolumeMetadata,
+              VolumeTypeExtraSpecs,
+              VolumeTypes,
+              )
     engine = create_engine(FLAGS.sql_connection, echo=False)
     for model in models:
         model.metadata.create_all(engine)

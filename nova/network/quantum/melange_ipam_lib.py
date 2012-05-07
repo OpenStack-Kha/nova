@@ -15,7 +15,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from netaddr import IPNetwork, IPAddress
+import netaddr
+
 from nova import db
 from nova import exception
 from nova import flags
@@ -23,7 +24,7 @@ from nova import log as logging
 from nova.network.quantum import melange_connection
 
 
-LOG = logging.getLogger("nova.network.quantum.melange_ipam_lib")
+LOG = logging.getLogger(__name__)
 
 FLAGS = flags.FLAGS
 
@@ -72,8 +73,8 @@ class QuantumMelangeIPAMLib(object):
                "label": label}
         if FLAGS.quantum_use_dhcp:
             if cidr:
-                n = IPNetwork(cidr)
-                net['dhcp_start'] = IPAddress(n.first + 2)
+                n = netaddr.IPNetwork(cidr)
+                net['dhcp_start'] = netaddr.IPAddress(n.first + 2)
         else:
             net['dhcp_start'] = None
         admin_context = context.elevated()
@@ -86,18 +87,6 @@ class QuantumMelangeIPAMLib(object):
                                       vif_ref['uuid'], project_id,
                                       vif_ref['address'])
         return [ip['address'] for ip in ips]
-
-    def get_network_id_by_cidr(self, context, cidr, project_id):
-        """Find the Quantum UUID associated with a IPv4 CIDR
-           address for the specified tenant.
-        """
-        tenant_id = project_id or FLAGS.quantum_default_tenant_id
-        all_blocks = self.m_conn.get_blocks(tenant_id)
-        for b in all_blocks['ip_blocks']:
-            LOG.debug("block: %s" % b)
-            if b['cidr'] == cidr:
-                return b['network_id']
-        raise exception.NotFound(_("No network found for cidr %s" % cidr))
 
     def delete_subnets_by_net_id(self, context, net_id, project_id):
         """Find Melange block associated with the Quantum UUID,
@@ -164,10 +153,12 @@ class QuantumMelangeIPAMLib(object):
     def get_tenant_id_by_net_id(self, context, net_id, vif_id, project_id):
         ipam_tenant_id = None
         tenant_ids = [FLAGS.quantum_default_tenant_id, project_id, None]
+        # This is confusing, if there are IPs for the given net, vif,
+        # tenant trifecta we assume that is the tenant for that network
         for tid in tenant_ids:
             try:
-                ips = self.m_conn.get_allocated_ips(net_id, vif_id, tid)
-            except Exception, e:
+                self.m_conn.get_allocated_ips(net_id, vif_id, tid)
+            except KeyError:
                 continue
             ipam_tenant_id = tid
             break
@@ -226,7 +217,7 @@ class QuantumMelangeIPAMLib(object):
         tenant_id = project_id or FLAGS.quantum_default_tenant_id
         ip_list = self.m_conn.get_allocated_ips(net_id, vif_id, tenant_id)
         return [ip['address'] for ip in ip_list
-                if IPNetwork(ip['address']).version == ip_version]
+                if netaddr.IPNetwork(ip['address']).version == ip_version]
 
     def verify_subnet_exists(self, context, project_id, quantum_net_id):
         """Confirms that a subnet exists that is associated with the

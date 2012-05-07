@@ -21,9 +21,9 @@ Test suite for VMWareAPI.
 
 from nova import context
 from nova import db
+from nova import exception
 from nova import flags
 from nova import test
-from nova import utils
 from nova.compute import power_state
 from nova.tests.glance import stubs as glance_stubs
 from nova.tests.vmwareapi import db_fakes
@@ -47,7 +47,6 @@ class VMWareAPIVMTestCase(test.TestCase):
         self.user_id = 'fake'
         self.project_id = 'fake'
         self.context = context.RequestContext(self.user_id, self.project_id)
-        self.network = utils.import_object(FLAGS.network_manager)
         vmwareapi_fake.reset()
         db_fakes.stub_out_db_instance_api(self.stubs)
         stubs.set_stubs(self.stubs)
@@ -114,7 +113,7 @@ class VMWareAPIVMTestCase(test.TestCase):
         self.assertEquals(len(instances), 1)
 
         # Get Nova record for VM
-        vm_info = self.conn.get_info(1)
+        vm_info = self.conn.get_info({'name': 1})
 
         # Get record for VM
         vms = vmwareapi_fake._get_objects("VirtualMachine")
@@ -157,85 +156,90 @@ class VMWareAPIVMTestCase(test.TestCase):
 
     def test_spawn(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
 
     def test_snapshot(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
         self.conn.snapshot(self.context, self.instance, "Test-Snapshot")
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
 
     def test_snapshot_non_existent(self):
         self._create_instance_in_the_db()
-        self.assertRaises(Exception, self.conn.snapshot, self.context,
-                          self.instance, "Test-Snapshot")
+        self.assertRaises(exception.InstanceNotFound, self.conn.snapshot,
+                          self.context, self.instance, "Test-Snapshot")
 
     def test_reboot(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
         reboot_type = "SOFT"
         self.conn.reboot(self.instance, self.network_info, reboot_type)
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
 
     def test_reboot_non_existent(self):
         self._create_instance_in_the_db()
-        self.assertRaises(Exception, self.conn.reboot, self.instance)
+        self.assertRaises(exception.InstanceNotFound, self.conn.reboot,
+                          self.instance, self.network_info, 'SOFT')
 
     def test_reboot_not_poweredon(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
         self.conn.suspend(self.instance)
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.PAUSED)
-        self.assertRaises(Exception, self.conn.reboot, self.instance)
+        self.assertRaises(exception.InstanceRebootFailure, self.conn.reboot,
+                          self.instance, self.network_info, 'SOFT')
 
     def test_suspend(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
         self.conn.suspend(self.instance)
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.PAUSED)
 
     def test_suspend_non_existent(self):
         self._create_instance_in_the_db()
-        self.assertRaises(Exception, self.conn.suspend, self.instance)
+        self.assertRaises(exception.InstanceNotFound, self.conn.suspend,
+                          self.instance)
 
     def test_resume(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
         self.conn.suspend(self.instance)
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.PAUSED)
         self.conn.resume(self.instance)
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
 
     def test_resume_non_existent(self):
         self._create_instance_in_the_db()
-        self.assertRaises(Exception, self.conn.resume, self.instance)
+        self.assertRaises(exception.InstanceNotFound, self.conn.resume,
+                          self.instance)
 
     def test_resume_not_suspended(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
-        self.assertRaises(Exception, self.conn.resume, self.instance)
+        self.assertRaises(exception.InstanceResumeFailure, self.conn.resume,
+                          self.instance)
 
     def test_get_info(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
 
     def test_destroy(self):
         self._create_vm()
-        info = self.conn.get_info(1)
+        info = self.conn.get_info({'name': 1})
         self._check_vm_info(info, power_state.RUNNING)
         instances = self.conn.list_instances()
         self.assertEquals(len(instances), 1)

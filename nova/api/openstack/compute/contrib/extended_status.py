@@ -1,4 +1,4 @@
-#   Copyright 2011 Openstack, LLC.
+#   Copyright 2011 OpenStack, LLC.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License"); you may
 #   not use this file except in compliance with the License. You may obtain
@@ -26,7 +26,7 @@ from nova import log as logging
 
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger("nova.api.openstack.compute.contrib.extendedstatus")
+LOG = logging.getLogger(__name__)
 authorize = extensions.soft_extension_authorizer('compute', 'extended_status')
 
 
@@ -36,6 +36,9 @@ class ExtendedStatusController(wsgi.Controller):
         self.compute_api = compute.API()
 
     def _get_instances(self, context, instance_uuids):
+        if not instance_uuids:
+            return {}
+
         filters = {'uuid': instance_uuids}
         instances = self.compute_api.get_all(context, filters)
         return dict((instance['uuid'], instance) for instance in instances)
@@ -53,7 +56,7 @@ class ExtendedStatusController(wsgi.Controller):
             resp_obj.attach(xml=ExtendedStatusTemplate())
 
             try:
-                instance = self.compute_api.routing_get(context, id)
+                instance = self.compute_api.get(context, id)
             except exception.NotFound:
                 explanation = _("Server not found.")
                 raise exc.HTTPNotFound(explanation=explanation)
@@ -86,8 +89,8 @@ class Extended_status(extensions.ExtensionDescriptor):
 
     name = "ExtendedStatus"
     alias = "OS-EXT-STS"
-    namespace = "http://docs.openstack.org/compute/ext/" \
-                "extended_status/api/v1.1"
+    namespace = ("http://docs.openstack.org/compute/ext/"
+                 "extended_status/api/v1.1")
     updated = "2011-11-03T00:00:00+00:00"
 
     def get_controller_extensions(self):

@@ -1,4 +1,4 @@
-# Copyright (c) 2011 Openstack, LLC
+# Copyright (c) 2011 OpenStack, LLC
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,7 +20,6 @@ import datetime
 
 from nova import db
 from nova import exception
-from nova import log as logging
 from nova.scheduler import host_manager
 from nova import test
 from nova.tests.scheduler import fakes
@@ -45,14 +44,14 @@ class HostManagerTestCase(test.TestCase):
         self.host_manager = host_manager.HostManager()
 
     def test_choose_host_filters_not_found(self):
-        self.flags(default_host_filters='ComputeFilterClass3')
+        self.flags(scheduler_default_filters='ComputeFilterClass3')
         self.host_manager.filter_classes = [ComputeFilterClass1,
                 ComputeFilterClass2]
         self.assertRaises(exception.SchedulerHostFilterNotFound,
                 self.host_manager._choose_host_filters, None)
 
     def test_choose_host_filters(self):
-        self.flags(default_host_filters=['ComputeFilterClass2'])
+        self.flags(scheduler_default_filters=['ComputeFilterClass2'])
         self.host_manager.filter_classes = [ComputeFilterClass1,
                 ComputeFilterClass2]
 
@@ -85,7 +84,6 @@ class HostManagerTestCase(test.TestCase):
         self.mox.ReplayAll()
         filtered_hosts = self.host_manager.filter_hosts(hosts,
                 filter_properties, filters=None)
-        self.mox.VerifyAll()
         self.assertEqual(len(filtered_hosts), 1)
         self.assertEqual(filtered_hosts[0], fake_host2)
 
@@ -109,7 +107,6 @@ class HostManagerTestCase(test.TestCase):
                 host1_volume_capabs)
         self.host_manager.update_service_capabilities('compute', 'host2',
                 host2_compute_capabs)
-        self.mox.VerifyAll()
 
         # Make sure dictionary isn't re-assigned
         self.assertEqual(self.host_manager.service_states, service_states)
@@ -150,7 +147,6 @@ class HostManagerTestCase(test.TestCase):
         res1 = self.host_manager.host_service_caps_stale('host1', 'compute')
         res2 = self.host_manager.host_service_caps_stale('host1', 'volume')
         res3 = self.host_manager.host_service_caps_stale('host2', 'compute')
-        self.mox.VerifyAll()
 
         self.assertEqual(res1, True)
         self.assertEqual(res2, False)
@@ -230,7 +226,6 @@ class HostManagerTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         result = self.host_manager.get_service_capabilities()
-        self.mox.VerifyAll()
 
         self.assertEqual(info['called'], 5)
 
@@ -249,17 +244,16 @@ class HostManagerTestCase(test.TestCase):
         topic = 'compute'
 
         self.mox.StubOutWithMock(db, 'compute_node_get_all')
-        self.mox.StubOutWithMock(logging, 'warn')
+        self.mox.StubOutWithMock(host_manager.LOG, 'warn')
         self.mox.StubOutWithMock(db, 'instance_get_all')
 
         db.compute_node_get_all(context).AndReturn(fakes.COMPUTE_NODES)
         # Invalid service
-        logging.warn("No service for compute ID 5")
+        host_manager.LOG.warn("No service for compute ID 5")
         db.instance_get_all(context).AndReturn(fakes.INSTANCES)
 
         self.mox.ReplayAll()
         host_states = self.host_manager.get_all_host_states(context, topic)
-        self.mox.VerifyAll()
 
         self.assertEqual(len(host_states), 4)
         # Check that .service is set properly
@@ -285,9 +279,6 @@ class HostManagerTestCase(test.TestCase):
 class HostStateTestCase(test.TestCase):
     """Test case for HostState class"""
 
-    def setUp(self):
-        super(HostStateTestCase, self).setUp()
-
     # update_from_compute_node() and consume_from_instance() are tested
     # in HostManagerTestCase.test_get_all_host_states()
 
@@ -306,7 +297,6 @@ class HostStateTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         result = fake_host.passes_filters(filter_fns, filter_properties)
-        self.mox.VerifyAll()
         self.assertTrue(result)
 
     def test_host_state_passes_filters_passes_with_ignore(self):
@@ -324,7 +314,6 @@ class HostStateTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         result = fake_host.passes_filters(filter_fns, filter_properties)
-        self.mox.VerifyAll()
         self.assertTrue(result)
 
     def test_host_state_passes_filters_fails(self):
@@ -342,7 +331,6 @@ class HostStateTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         result = fake_host.passes_filters(filter_fns, filter_properties)
-        self.mox.VerifyAll()
         self.assertFalse(result)
 
     def test_host_state_passes_filters_fails_from_ignore(self):
@@ -360,7 +348,6 @@ class HostStateTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         result = fake_host.passes_filters(filter_fns, filter_properties)
-        self.mox.VerifyAll()
         self.assertFalse(result)
 
     def test_host_state_passes_filters_skipped_from_force(self):
@@ -378,5 +365,4 @@ class HostStateTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         result = fake_host.passes_filters(filter_fns, filter_properties)
-        self.mox.VerifyAll()
         self.assertTrue(result)

@@ -25,7 +25,7 @@ from nova import log as logging
 from nova.openstack.common import cfg
 
 
-LOG = logging.getLogger('nova.rpc')
+LOG = logging.getLogger(__name__)
 
 rpc_opts = [
     cfg.IntOpt('rpc_thread_pool_size',
@@ -35,11 +35,11 @@ rpc_opts = [
                default=30,
                help='Size of RPC connection pool'),
     cfg.IntOpt('rpc_response_timeout',
-               default=3600,
+               default=60,
                help='Seconds to wait for a response from call or multicall'),
     ]
 
-flags.FLAGS.add_options(rpc_opts)
+flags.FLAGS.register_opts(rpc_opts)
 
 
 class RemoteError(exception.NovaException):
@@ -131,14 +131,30 @@ def _safe_log(log_func, msg, msg_data):
                 'set_admin_password': ('new_pass',),
                 'run_instance': ('admin_password',),
                }
-    method = msg_data['method']
-    if method in SANITIZE:
-        msg_data = copy.deepcopy(msg_data)
-        args_to_sanitize = SANITIZE[method]
-        for arg in args_to_sanitize:
-            try:
-                msg_data['args'][arg] = "<SANITIZED>"
-            except KeyError:
-                pass
+
+    has_method = 'method' in msg_data and msg_data['method'] in SANITIZE
+    has_context_token = '_context_auth_token' in msg_data
+    has_token = 'auth_token' in msg_data
+
+    if not any([has_method, has_context_token, has_token]):
+        return log_func(msg, msg_data)
+
+    msg_data = copy.deepcopy(msg_data)
+
+    if has_method:
+        method = msg_data['method']
+        if method in SANITIZE:
+            args_to_sanitize = SANITIZE[method]
+            for arg in args_to_sanitize:
+                try:
+                    msg_data['args'][arg] = "<SANITIZED>"
+                except KeyError:
+                    pass
+
+    if has_context_token:
+        msg_data['_context_auth_token'] = '<SANITIZED>'
+
+    if has_token:
+        msg_data['auth_token'] = '<SANITIZED>'
 
     return log_func(msg, msg_data)

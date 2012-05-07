@@ -1,4 +1,4 @@
-# Copyright (c) 2011 Openstack, LLC.
+# Copyright (c) 2011 OpenStack, LLC.
 # Copyright (c) 2012 Justin Santa Barbara
 #
 # All Rights Reserved.
@@ -18,21 +18,20 @@
 from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
-from nova.scheduler.filters import abstract_filter
+from nova.scheduler import filters
 
 
-LOG = logging.getLogger('nova.scheduler.filter.core_filter')
+LOG = logging.getLogger(__name__)
 
-cpu_allocation_ratio_opt = \
-    cfg.FloatOpt('cpu_allocation_ratio',
-             default=16.0,
-               help='Virtual CPU to Physical CPU allocation ratio')
+cpu_allocation_ratio_opt = cfg.FloatOpt('cpu_allocation_ratio',
+        default=16.0,
+        help='Virtual CPU to Physical CPU allocation ratio')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(cpu_allocation_ratio_opt)
+FLAGS.register_opt(cpu_allocation_ratio_opt)
 
 
-class CoreFilter(abstract_filter.AbstractHostFilter):
+class CoreFilter(filters.BaseHostFilter):
     """CoreFilter filters based on CPU core utilization."""
 
     def host_passes(self, host_state, filter_properties):

@@ -24,10 +24,11 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 import nova.network.api
+from nova.rpc import common
 
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger('nova.api.openstack.compute.contrib.networks')
+LOG = logging.getLogger(__name__)
 authorize = extensions.extension_authorizer('compute', 'networks')
 
 
@@ -40,7 +41,10 @@ def network_dict(network):
                   'netmask', 'injected', 'cidr', 'vpn_public_address',
                   'multi_host', 'dns1', 'host', 'gateway_v6', 'netmask_v6',
                   'created_at')
-        return dict((field, network[field]) for field in fields)
+        result = dict((field, network[field]) for field in fields)
+        if 'uuid' in network:
+            result['id'] = network['uuid']
+        return result
     else:
         return {}
 
@@ -67,11 +71,16 @@ class NetworkController(object):
     def _disassociate(self, request, network_id, body):
         context = request.environ['nova.context']
         authorize(context)
-        LOG.debug(_("Disassociating network with id %s" % network_id))
+        LOG.debug(_("Disassociating network with id %s") % network_id)
         try:
             self.network_api.disassociate(context, network_id)
         except exception.NetworkNotFound:
             raise exc.HTTPNotFound(_("Network not found"))
+        except common.RemoteError as ex:
+            if ex.exc_type in ["NetworkNotFound", "NetworkNotFoundForUUID"]:
+                raise exc.HTTPNotFound(_("Network not found"))
+            else:
+                raise
         return exc.HTTPAccepted()
 
     def index(self, req):
@@ -89,6 +98,11 @@ class NetworkController(object):
             network = self.network_api.get(context, id)
         except exception.NetworkNotFound:
             raise exc.HTTPNotFound(_("Network not found"))
+        except common.RemoteError as ex:
+            if ex.exc_type in ["NetworkNotFound", "NetworkNotFoundForUUID"]:
+                raise exc.HTTPNotFound(_("Network not found"))
+            else:
+                raise
         return {'network': network_dict(network)}
 
     def delete(self, req, id):
@@ -99,6 +113,11 @@ class NetworkController(object):
             self.network_api.delete(context, id)
         except exception.NetworkNotFound:
             raise exc.HTTPNotFound(_("Network not found"))
+        except common.RemoteError as ex:
+            if ex.exc_type in ["NetworkNotFound", "NetworkNotFoundForUUID"]:
+                raise exc.HTTPNotFound(_("Network not found"))
+            else:
+                raise
         return exc.HTTPAccepted()
 
     def create(self, req, id, body=None):
@@ -111,7 +130,7 @@ class Networks(extensions.ExtensionDescriptor):
     name = "Networks"
     alias = "os-networks"
     namespace = "http://docs.openstack.org/compute/ext/networks/api/v1.1"
-    updated = "2011-12-23 00:00:00"
+    updated = "2011-12-23T00:00:00+00:00"
 
     def get_resources(self):
         member_actions = {'action': 'POST'}

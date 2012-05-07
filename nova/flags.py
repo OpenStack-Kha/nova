@@ -3,7 +3,7 @@
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
-# Copyright 2011 Red Hat, Inc.
+# Copyright 2012 Red Hat, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -30,146 +30,22 @@ import os
 import socket
 import sys
 
-import gflags
-
+from nova.compat import flagfile
 from nova.openstack.common import cfg
 
 
-class FlagValues(object):
-    class Flag:
-        def __init__(self, name, value, update_default=None):
-            self.name = name
-            self.value = value
-            self._update_default = update_default
+class NovaConfigOpts(cfg.CommonConfigOpts):
 
-        def SetDefault(self, default):
-            if self._update_default:
-                self._update_default(self.name, default)
-
-    class ErrorCatcher:
-        def __init__(self, orig_error):
-            self.orig_error = orig_error
-            self.reset()
-
-        def reset(self):
-            self._error_msg = None
-
-        def catch(self, msg):
-            if ": --" in msg:
-                self._error_msg = msg
-            else:
-                self.orig_error(msg)
-
-        def get_unknown_arg(self, args):
-            if not self._error_msg:
-                return None
-            # Error message is e.g. "no such option: --runtime_answer"
-            a = self._error_msg[self._error_msg.rindex(": --") + 2:]
-            return filter(lambda i: i == a or i.startswith(a + "="), args)[0]
-
-    def __init__(self):
-        self._conf = cfg.ConfigOpts()
-        self._conf.disable_interspersed_args()
-        self._opts = {}
-        self.Reset()
-
-    def _parse(self):
-        if self._extra is not None:
-            return
-
-        args = gflags.FlagValues().ReadFlagsFromFiles(self._args)
-
-        extra = None
-
-        #
-        # This horrendous hack allows us to stop optparse
-        # exiting when it encounters an unknown option
-        #
-        error_catcher = self.ErrorCatcher(self._conf._oparser.error)
-        self._conf._oparser.error = error_catcher.catch
-        try:
-            while True:
-                error_catcher.reset()
-
-                extra = self._conf(args)
-
-                unknown = error_catcher.get_unknown_arg(args)
-                if not unknown:
-                    break
-
-                args.remove(unknown)
-        finally:
-            self._conf._oparser.error = error_catcher.orig_error
-
-        self._extra = extra
+    def __init__(self, *args, **kwargs):
+        super(NovaConfigOpts, self).__init__(*args, **kwargs)
+        self.disable_interspersed_args()
 
     def __call__(self, argv):
-        self.Reset()
-        self._args = argv[1:]
-        self._parse()
-        return [argv[0]] + self._extra
-
-    def __getattr__(self, name):
-        self._parse()
-        return getattr(self._conf, name)
-
-    def get(self, name, default):
-        value = getattr(self, name)
-        if value is not None:  # value might be '0' or ""
-            return value
-        else:
-            return default
-
-    def __contains__(self, name):
-        self._parse()
-        return hasattr(self._conf, name)
-
-    def _update_default(self, name, default):
-        self._conf.set_default(name, default)
-
-    def __iter__(self):
-        return self._conf.iterkeys()
-
-    def __getitem__(self, name):
-        self._parse()
-        if not self.__contains__(name):
-            return None
-        return self.Flag(name, getattr(self, name), self._update_default)
-
-    def Reset(self):
-        self._conf.reset()
-        self._args = []
-        self._extra = None
-
-    def ParseNewFlags(self):
-        pass
-
-    def FlagValuesDict(self):
-        self._parse()
-        ret = {}
-        for name in self._conf:
-            ret[name] = getattr(self, name)
-        return ret
-
-    def add_option(self, opt):
-        if opt.dest in self._conf:
-            return
-
-        self._opts[opt.dest] = opt
-
-        try:
-            self._conf.register_cli_opts(self._opts.values())
-        except cfg.ArgsAlreadyParsedError:
-            self._conf.reset()
-            self._conf.register_cli_opts(self._opts.values())
-            self._extra = None
-
-    def add_options(self, opts):
-        for opt in opts:
-            self.add_option(opt)
+        with flagfile.handle_flagfiles_managed(argv[1:]) as args:
+            return argv[:1] + super(NovaConfigOpts, self).__call__(args)
 
 
-FLAGS = FlagValues()
+FLAGS = NovaConfigOpts()
 
 
 class UnrecognizedFlag(Exception):
@@ -184,27 +60,87 @@ def DECLARE(name, module_string, flag_values=FLAGS):
 
 
 def _get_my_ip():
-    """Returns the actual ip of the local machine."""
+    """
+    Returns the actual ip of the local machine.
+
+    This code figures out what source address would be used if some traffic
+    were to be sent out to some well known address on the Internet. In this
+    case, a Google DNS server is used, but the specific address does not
+    matter much.  No traffic is actually sent.
+    """
     try:
         csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         csock.connect(('8.8.8.8', 80))
         (addr, port) = csock.getsockname()
         csock.close()
         return addr
-    except socket.error as ex:
+    except socket.error:
         return "127.0.0.1"
 
+
+log_opts = [
+    cfg.StrOpt('logdir',
+               default=None,
+               help='Log output to a per-service log file in named directory'),
+    cfg.StrOpt('logfile',
+               default=None,
+               help='Log output to a named file'),
+    cfg.BoolOpt('use_stderr',
+                default=True,
+                help='Log output to standard error'),
+    ]
+
+core_opts = [
+    cfg.StrOpt('connection_type',
+               default=None,
+               help='Virtualization api connection type : libvirt, xenapi, '
+                    'or fake'),
+    cfg.StrOpt('sql_connection',
+               default='sqlite:///$state_path/$sqlite_db',
+               help='The SQLAlchemy connection string used to connect to the '
+                    'database'),
+    cfg.IntOpt('sql_connection_debug',
+               default=0,
+               help='Verbosity of SQL debugging information. 0=None, '
+                    '100=Everything'),
+    cfg.StrOpt('api_paste_config',
+               default="api-paste.ini",
+               help='File name for the paste.deploy config for nova-api'),
+    cfg.StrOpt('pybasedir',
+               default=os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                                    '../')),
+               help='Directory where the nova python module is installed'),
+    cfg.StrOpt('bindir',
+               default='$pybasedir/bin',
+               help='Directory where nova binaries are installed'),
+    cfg.StrOpt('state_path',
+               default='$pybasedir',
+               help="Top-level directory for maintaining nova's state"),
+    cfg.StrOpt('lock_path',
+               default='$pybasedir',
+               help='Directory to use for lock files'),
+    ]
+
+debug_opts = [
+    cfg.BoolOpt('fake_network',
+                default=False,
+                help='If passed, use fake network devices and addresses'),
+    cfg.BoolOpt('fake_rabbit',
+                default=False,
+                help='If passed, use a fake RabbitMQ provider'),
+]
+
+FLAGS.register_cli_opts(log_opts)
+FLAGS.register_cli_opts(core_opts)
+FLAGS.register_cli_opts(debug_opts)
 
 global_opts = [
     cfg.StrOpt('my_ip',
                default=_get_my_ip(),
-               help='host ip address'),
+               help='ip address of this host'),
     cfg.ListOpt('region_list',
                 default=[],
                 help='list of region=fqdn pairs separated by commas'),
-    cfg.StrOpt('connection_type',
-               default=None,
-               help='libvirt, xenapi or fake'),
     cfg.StrOpt('aws_access_key_id',
                default='admin',
                help='AWS Access ID'),
@@ -213,25 +149,28 @@ global_opts = [
                help='AWS Access Key'),
     cfg.StrOpt('glance_host',
                default='$my_ip',
-               help='default glance host'),
+               help='default glance hostname or ip'),
     cfg.IntOpt('glance_port',
                default=9292,
                help='default glance port'),
     cfg.ListOpt('glance_api_servers',
                 default=['$glance_host:$glance_port'],
-                help='glance api servers available to nova (host:port)'),
+                help='A list of the glance api servers available to nova '
+                     '([hostname|ip]:port)'),
     cfg.IntOpt('glance_num_retries',
                default=0,
                help='Number retries when downloading an image from glance'),
     cfg.IntOpt('s3_port',
                default=3333,
-               help='s3 port'),
+               help='port used when accessing the s3 api'),
     cfg.StrOpt('s3_host',
                default='$my_ip',
-               help='s3 host (for infrastructure)'),
+               help='hostname or ip for openstack to use when accessing '
+                    'the s3 api'),
     cfg.StrOpt('s3_dmz',
                default='$my_ip',
-               help='s3 dmz ip (for instances)'),
+               help='hostname or ip for the instances to use when accessing '
+                    'the s3 api'),
     cfg.StrOpt('cert_topic',
                default='cert',
                help='the topic cert nodes listen on'),
@@ -250,6 +189,7 @@ global_opts = [
     cfg.StrOpt('network_topic',
                default='network',
                help='the topic network nodes listen on'),
+<<<<<<< HEAD
     cfg.StrOpt('vsa_topic',
                default='vsa',
                help='the topic that nova-vsa service listens on'),
@@ -265,51 +205,65 @@ global_opts = [
     cfg.ListOpt('rabbit_addresses',
                default=['localhost:5672'],
                help='RabbitMQ cluster host:port pairs'),
+=======
+    cfg.StrOpt('rabbit_host',
+               default='localhost',
+               help='the RabbitMQ host'),
+    cfg.IntOpt('rabbit_port',
+               default=5672,
+               help='the RabbitMQ port'),
+>>>>>>> source/stable/essex
     cfg.BoolOpt('rabbit_use_ssl',
                 default=False,
-                help='connect over SSL'),
+                help='connect over SSL for RabbitMQ'),
     cfg.StrOpt('rabbit_userid',
                default='guest',
-               help='rabbit userid'),
+               help='the RabbitMQ userid'),
     cfg.StrOpt('rabbit_password',
                default='guest',
-               help='rabbit password'),
+               help='the RabbitMQ password'),
     cfg.StrOpt('rabbit_virtual_host',
                default='/',
-               help='rabbit virtual host'),
+               help='the RabbitMQ virtual host'),
     cfg.IntOpt('rabbit_retry_interval',
                default=1,
-               help='rabbit connection retry interval to start'),
+               help='how frequently to retry connecting with RabbitMQ'),
     cfg.IntOpt('rabbit_retry_backoff',
                default=2,
-               help='rabbit connection retry backoff in seconds'),
+               help='how long to backoff for between retries when connecting '
+                    'to RabbitMQ'),
     cfg.IntOpt('rabbit_max_retries',
                default=0,
-               help='maximum rabbit connection attempts (0=try forever)'),
+               help='maximum retries with trying to connect to RabbitMQ '
+                    '(the default of 0 implies an infinite retry count)'),
     cfg.StrOpt('control_exchange',
                default='nova',
-               help='the main exchange to connect to'),
+               help='the main RabbitMQ exchange to connect to'),
     cfg.BoolOpt('rabbit_durable_queues',
                 default=False,
-                help='use durable queues'),
+                help='use durable queues in RabbitMQ'),
+    cfg.BoolOpt('api_rate_limit',
+                default=True,
+                help='whether to rate limit the api'),
     cfg.ListOpt('enabled_apis',
                 default=['ec2', 'osapi_compute', 'osapi_volume', 'metadata'],
-                help='list of APIs to enable by default'),
+                help='a list of APIs to enable by default'),
     cfg.StrOpt('ec2_host',
                default='$my_ip',
-               help='ip of api server'),
+               help='the ip of the ec2 api server'),
     cfg.StrOpt('ec2_dmz_host',
                default='$my_ip',
-               help='internal ip of api server'),
+               help='the internal ip of the ec2 api server'),
     cfg.IntOpt('ec2_port',
                default=8773,
-               help='cloud controller port'),
+               help='the port of the ec2 api server'),
     cfg.StrOpt('ec2_scheme',
                default='http',
-               help='prefix for ec2'),
+               help='the protocol to use when connecting to the ec2 api '
+                    'server (http, https)'),
     cfg.StrOpt('ec2_path',
                default='/services/Cloud',
-               help='suffix for ec2'),
+               help='the path prefix used to call the ec2 api server'),
     cfg.ListOpt('osapi_compute_ext_list',
                 default=[],
                 help='Specify list of extensions to load when using osapi_'
@@ -332,30 +286,32 @@ global_opts = [
                     help='osapi volume extension to load'),
     cfg.StrOpt('osapi_scheme',
                default='http',
-               help='prefix for openstack'),
+               help='the protocol to use when connecting to the openstack api '
+                    'server (http, https)'),
     cfg.StrOpt('osapi_path',
                default='/v1.1/',
-               help='suffix for openstack'),
+               help='the path prefix used to call the openstack api server'),
     cfg.StrOpt('osapi_compute_link_prefix',
                default=None,
                help='Base URL that will be presented to users in links '
-                    'to the Openstack Compute API'),
+                    'to the OpenStack Compute API'),
     cfg.StrOpt('osapi_glance_link_prefix',
                default=None,
                help='Base URL that will be presented to users in links '
                     'to glance resources'),
     cfg.IntOpt('osapi_max_limit',
                default=1000,
-               help='max number of items returned in a collection response'),
+               help='the maximum number of items returned in a single '
+                    'response from a collection resource'),
     cfg.StrOpt('metadata_host',
                default='$my_ip',
-               help='ip of metadata server'),
+               help='the ip for the metadata api server'),
     cfg.IntOpt('metadata_port',
                default=8775,
-               help='Metadata API port'),
+               help='the port for the metadata api port'),
     cfg.StrOpt('default_project',
                default='openstack',
-               help='default project for openstack'),
+               help='the default project to use for openstack'),
     cfg.StrOpt('default_image',
                default='ami-11111',
                help='default image to use, testing only'),
@@ -368,85 +324,59 @@ global_opts = [
                     'use a raw disk image instead'),
     cfg.StrOpt('vpn_image_id',
                default='0',
-               help='image id for cloudpipe vpn server'),
+               help='image id used when starting up a cloudpipe vpn server'),
     cfg.StrOpt('vpn_key_suffix',
                default='-vpn',
                help='Suffix to add to project name for vpn key and secgroups'),
     cfg.IntOpt('auth_token_ttl',
                default=3600,
                help='Seconds for auth tokens to linger'),
-    cfg.StrOpt('state_path',
-               default=os.path.join(os.path.dirname(__file__), '../'),
-               help="Top-level directory for maintaining nova's state"),
-    cfg.StrOpt('lock_path',
-               default=os.path.join(os.path.dirname(__file__), '../'),
-               help='Directory for lock files'),
-    cfg.StrOpt('logdir',
-               default=None,
-               help='output to a per-service log file in named directory'),
     cfg.StrOpt('logfile_mode',
                default='0644',
-               help='Default file mode of the logs.'),
+               help='Default file mode used when creating log files'),
     cfg.StrOpt('sqlite_db',
                default='nova.sqlite',
-               help='file name for sqlite'),
+               help='the filename to use with sqlite'),
     cfg.BoolOpt('sqlite_synchronous',
                 default=True,
-                help='Synchronous mode for sqlite'),
-    cfg.StrOpt('sql_connection',
-               default='sqlite:///$state_path/$sqlite_db',
-               help='connection string for sql database'),
+                help='If passed, use synchronous mode for sqlite'),
     cfg.IntOpt('sql_idle_timeout',
                default=3600,
-               help='timeout for idle sql database connections'),
+               help='timeout before idle sql connections are reaped'),
     cfg.IntOpt('sql_max_retries',
-               default=12,
-               help='sql connection attempts'),
+               default=10,
+               help='maximum db connection retries during startup. '
+                    '(setting -1 implies an infinite retry count)'),
     cfg.IntOpt('sql_retry_interval',
                default=10,
-               help='sql connection retry interval'),
+               help='interval between retries of opening a sql connection'),
     cfg.StrOpt('compute_manager',
                default='nova.compute.manager.ComputeManager',
-               help='Manager for compute'),
+               help='full class name for the Manager for compute'),
     cfg.StrOpt('console_manager',
                default='nova.console.manager.ConsoleProxyManager',
-               help='Manager for console proxy'),
+               help='full class name for the Manager for console proxy'),
     cfg.StrOpt('cert_manager',
                default='nova.cert.manager.CertManager',
-               help='Manager for cert'),
+               help='full class name for the Manager for cert'),
     cfg.StrOpt('instance_dns_manager',
                default='nova.network.dns_driver.DNSDriver',
-               help='DNS Manager for instance IPs'),
+               help='full class name for the DNS Manager for instance IPs'),
     cfg.StrOpt('instance_dns_domain',
                default='',
-               help='DNS Zone for instance IPs'),
+               help='full class name for the DNS Zone for instance IPs'),
     cfg.StrOpt('floating_ip_dns_manager',
                default='nova.network.dns_driver.DNSDriver',
-               help='DNS Manager for floating IPs'),
+               help='full class name for the DNS Manager for floating IPs'),
     cfg.StrOpt('network_manager',
                default='nova.network.manager.VlanManager',
-               help='Manager for network'),
+               help='full class name for the Manager for network'),
     cfg.StrOpt('volume_manager',
                default='nova.volume.manager.VolumeManager',
-               help='Manager for volume'),
+               help='full class name for the Manager for volume'),
     cfg.StrOpt('scheduler_manager',
                default='nova.scheduler.manager.SchedulerManager',
-               help='Manager for scheduler'),
-    cfg.StrOpt('vsa_manager',
-               default='nova.vsa.manager.VsaManager',
-               help='Manager for vsa'),
-    cfg.StrOpt('vc_image_name',
-               default='vc_image',
-               help='the VC image ID (for a VC image that exists in Glance)'),
-    cfg.StrOpt('default_vsa_instance_type',
-               default='m1.small',
-               help='default instance type for VSA instances'),
-    cfg.IntOpt('max_vcs_in_vsa',
-               default=32,
-               help='maxinum VCs in a VSA'),
-    cfg.IntOpt('vsa_part_size_gb',
-               default=100,
-               help='default partition size for shared capacity'),
+               help='full class name for the Manager for scheduler'),
     cfg.StrOpt('firewall_driver',
                default='nova.virt.firewall.IptablesFirewallDriver',
                help='Firewall driver (defaults to iptables)'),
@@ -466,18 +396,10 @@ global_opts = [
     cfg.ListOpt('memcached_servers',
                 default=None,
                 help='Memcached servers or None for in process cache.'),
-    cfg.StrOpt('zone_name',
-               default='nova',
-               help='name of this zone'),
-    cfg.ListOpt('zone_capabilities',
-                default=['hypervisor=xenserver;kvm', 'os=linux;windows'],
-                help='Key/Multi-value list with the capabilities of the zone'),
-    cfg.StrOpt('build_plan_encryption_key',
-               default=None,
-               help='128bit (hex) encryption key for scheduler build plans.'),
     cfg.StrOpt('instance_usage_audit_period',
                default='month',
-               help='time period to generate instance usages for.'),
+               help='time period to generate instance usages for.  '
+                    'Time period must be hour, day, month or year'),
     cfg.IntOpt('bandwith_poll_interval',
                default=600,
                help='interval to pull bandwidth usage info'),
@@ -535,13 +457,38 @@ global_opts = [
                help='maximum time since last check-in for up service'),
     cfg.StrOpt('default_schedule_zone',
                default=None,
-               help='zone to use when user doesnt specify one'),
+               help='availability zone to use when user doesn\'t specify one'),
     cfg.ListOpt('isolated_images',
                 default=[],
                 help='Images to run on isolated host'),
     cfg.ListOpt('isolated_hosts',
                 default=[],
                 help='Host reserved for specific images'),
-    ]
+    cfg.BoolOpt('cache_images',
+                default=True,
+                help='Cache glance images locally'),
+    cfg.BoolOpt('use_cow_images',
+                default=True,
+                help='Whether to use cow images'),
+    cfg.StrOpt('compute_api_class',
+                default='nova.compute.api.API',
+                help='The full class name of the compute API class to use'),
+    cfg.StrOpt('network_api_class',
+                default='nova.network.api.API',
+                help='The full class name of the network API class to use'),
+    cfg.StrOpt('volume_api_class',
+                default='nova.volume.api.API',
+                help='The full class name of the volume API class to use'),
+    cfg.StrOpt('security_group_handler',
+               default='nova.network.quantum.sg.NullSecurityGroupHandler',
+               help='The full class name of the security group handler class'),
+    cfg.StrOpt('default_access_ip_network_name',
+               default=None,
+               help='Name of network to use to set access ips for instances'),
+    cfg.StrOpt('auth_strategy',
+               default='noauth',
+               help='The strategy to use for auth. Supports noauth, keystone, '
+                    'and deprecated.'),
+]
 
-FLAGS.add_options(global_opts)
+FLAGS.register_opts(global_opts)

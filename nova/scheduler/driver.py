@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2010 Openstack, LLC.
+# Copyright (c) 2010 OpenStack, LLC.
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
@@ -21,7 +21,6 @@
 Scheduler base class that all Schedulers should inherit from
 """
 
-from nova.api.ec2 import ec2utils
 from nova.compute import api as compute_api
 from nova.compute import power_state
 from nova.compute import vm_states
@@ -31,24 +30,20 @@ from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
 from nova import rpc
-from nova.scheduler import host_manager
-from nova.scheduler import zone_manager
+from nova.rpc import common as rpc_common
 from nova import utils
 
 
-LOG = logging.getLogger('nova.scheduler.driver')
+LOG = logging.getLogger(__name__)
 
 scheduler_driver_opts = [
     cfg.StrOpt('scheduler_host_manager',
                default='nova.scheduler.host_manager.HostManager',
                help='The scheduler host manager class to use'),
-    cfg.StrOpt('scheduler_zone_manager',
-               default='nova.scheduler.zone_manager.ZoneManager',
-               help='The scheduler zone manager class to use'),
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(scheduler_driver_opts)
+FLAGS.register_opts(scheduler_driver_opts)
 
 flags.DECLARE('instances_path', 'nova.compute.manager')
 
@@ -135,8 +130,6 @@ class Scheduler(object):
     """The base class that all Scheduler classes should inherit from."""
 
     def __init__(self):
-        self.zone_manager = utils.import_object(
-                FLAGS.scheduler_zone_manager)
         self.host_manager = utils.import_object(
                 FLAGS.scheduler_host_manager)
         self.compute_api = compute_api.API()
@@ -145,13 +138,8 @@ class Scheduler(object):
         """Get a list of hosts from the HostManager."""
         return self.host_manager.get_host_list()
 
-    def get_zone_list(self):
-        """Get a list of zones from the ZoneManager."""
-        return self.zone_manager.get_zone_list()
-
     def get_service_capabilities(self):
-        """Get the normalized set of capabilities for the services
-        in this zone.
+        """Get the normalized set of capabilities for the services.
         """
         return self.host_manager.get_service_capabilities()
 
@@ -159,10 +147,6 @@ class Scheduler(object):
         """Process a capability update from a service node."""
         self.host_manager.update_service_capabilities(service_name,
                 host, capabilities)
-
-    def poll_child_zones(self, context):
-        """Poll child zones periodically to get status."""
-        return self.zone_manager.update(context)
 
     def hosts_up(self, context, topic):
         """Return the list of hosts that have a running service for topic."""
@@ -193,17 +177,24 @@ class Scheduler(object):
         return instance
 
     def schedule(self, context, topic, method, *_args, **_kwargs):
-        """Must override at least this method for scheduler to work."""
+        """Must override schedule method for scheduler to work."""
         raise NotImplementedError(_("Must implement a fallback schedule"))
 
-    def select(self, context, topic, method, *_args, **_kwargs):
-        """Must override this for zones to work."""
-        raise NotImplementedError(_("Must implement 'select' method"))
+    def schedule_prep_resize(self, context, request_spec, *_args, **_kwargs):
+        """Must override schedule_prep_resize method for scheduler to work."""
+        msg = _("Driver must implement schedule_prep_resize")
+        raise NotImplementedError(msg)
+
+    def schedule_run_instance(self, context, request_spec, *_args, **_kwargs):
+        """Must override schedule_run_instance method for scheduler to work."""
+        msg = _("Driver must implement schedule_run_instance")
+        raise NotImplementedError(msg)
 
     def schedule_live_migration(self, context, instance_id, dest,
                                 block_migration=False,
                                 disk_over_commit=False):
         """Live migration scheduling method.
+
         :param context:
         :param instance_id:
         :param dest: destination host
@@ -257,8 +248,8 @@ class Scheduler(object):
 
         # Checking instance is running.
         if instance_ref['power_state'] != power_state.RUNNING:
-            instance_id = ec2utils.id_to_ec2_id(instance_ref['id'])
-            raise exception.InstanceNotRunning(instance_id=instance_id)
+            raise exception.InstanceNotRunning(
+                    instance_id=instance_ref['uuid'])
 
         # Checing volume node is running when any volumes are mounted
         # to the instance.
@@ -299,9 +290,8 @@ class Scheduler(object):
         # and dest is not same.
         src = instance_ref['host']
         if dest == src:
-            instance_id = ec2utils.id_to_ec2_id(instance_ref['id'])
-            raise exception.UnableToMigrateToSelf(instance_id=instance_id,
-                                                  host=dest)
+            raise exception.UnableToMigrateToSelf(
+                    instance_id=instance_ref['uuid'], host=dest)
 
         # Checking dst host still has enough capacities.
         self.assert_compute_node_has_enough_resources(context,
@@ -375,7 +365,7 @@ class Scheduler(object):
                      {"method": 'compare_cpu',
                       "args": {'cpu_info': oservice_ref['cpu_info']}})
 
-        except rpc.RemoteError:
+        except rpc_common.RemoteError:
             src = instance_ref['host']
             LOG.exception(_("host %(dest)s is not compatible with "
                                 "original host %(src)s.") % locals())
@@ -425,8 +415,8 @@ class Scheduler(object):
         mem_inst = instance_ref['memory_mb']
         avail = avail - used
         if avail <= mem_inst:
-            instance_id = ec2utils.id_to_ec2_id(instance_ref['id'])
-            reason = _("Unable to migrate %(instance_id)s to %(dest)s: "
+            instance_uuid = instance_ref['uuid']
+            reason = _("Unable to migrate %(instance_uuid)s to %(dest)s: "
                        "Lack of memory(host:%(avail)s <= "
                        "instance:%(mem_inst)s)")
             raise exception.MigrationError(reason=reason % locals())
@@ -466,7 +456,7 @@ class Scheduler(object):
                            {"method": 'get_instance_disk_info',
                             "args": {'instance_name': instance_ref['name']}})
             disk_infos = utils.loads(ret)
-        except rpc.RemoteError:
+        except rpc_common.RemoteError:
             LOG.exception(_("host %(dest)s is not compatible with "
                                 "original host %(src)s.") % locals())
             raise
@@ -481,8 +471,8 @@ class Scheduler(object):
 
         # Check that available disk > necessary disk
         if (available - necessary) < 0:
-            instance_id = ec2utils.id_to_ec2_id(instance_ref['id'])
-            reason = _("Unable to migrate %(instance_id)s to %(dest)s: "
+            instance_uuid = instance_ref['uuid']
+            reason = _("Unable to migrate %(instance_uuid)s to %(dest)s: "
                        "Lack of disk(host:%(available)s "
                        "<= instance:%(necessary)s)")
             raise exception.MigrationError(reason=reason % locals())

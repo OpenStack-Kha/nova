@@ -24,8 +24,7 @@ from nova import log as logging
 from nova import network
 
 
-LOG = logging.getLogger("nova.api.openstack.compute."
-                        "contrib.virtual_interfaces")
+LOG = logging.getLogger(__name__)
 authorize = extensions.extension_authorizer('compute', 'virtual_interfaces')
 
 
@@ -51,7 +50,7 @@ def _translate_vif_summary_view(_context, vif):
 
 
 class ServerVirtualInterfaceController(object):
-    """The instance VIF API controller for the Openstack API.
+    """The instance VIF API controller for the OpenStack API.
     """
 
     def __init__(self):
@@ -82,8 +81,8 @@ class Virtual_interfaces(extensions.ExtensionDescriptor):
 
     name = "VirtualInterfaces"
     alias = "virtual_interfaces"
-    namespace = "http://docs.openstack.org/compute/ext/" \
-                "virtual_interfaces/api/v1.1"
+    namespace = ("http://docs.openstack.org/compute/ext/"
+                 "virtual_interfaces/api/v1.1")
     updated = "2011-08-17T00:00:00+00:00"
 
     def get_resources(self):

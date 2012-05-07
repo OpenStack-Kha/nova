@@ -59,8 +59,8 @@ class QuotaTestCase(test.TestCase):
 
         def rpc_call_wrapper(context, topic, msg):
             """Stub out the scheduler creating the instance entry"""
-            if topic == FLAGS.scheduler_topic and \
-                    msg['method'] == 'run_instance':
+            if (topic == FLAGS.scheduler_topic and
+                msg['method'] == 'run_instance'):
                 scheduler = scheduler_driver.Scheduler
                 instance = scheduler().create_instance_db_entry(
                         context,
@@ -152,6 +152,10 @@ class QuotaTestCase(test.TestCase):
         num_instances = quota.allowed_instances(self.context, 100,
                                                 instance_type)
         self.assertEqual(num_instances, 100)
+        db.quota_create(self.context, self.project_id, 'instances', -1)
+        num_instances = quota.allowed_instances(self.context, 100,
+                                                instance_type)
+        self.assertEqual(num_instances, 100)
         num_instances = quota.allowed_instances(self.context, 101,
                                                 instance_type)
         self.assertEqual(num_instances, 101)
@@ -163,6 +167,10 @@ class QuotaTestCase(test.TestCase):
                                                 instance_type)
         self.assertEqual(num_instances, 2)
         db.quota_create(self.context, self.project_id, 'ram', None)
+        num_instances = quota.allowed_instances(self.context, 100,
+                                                instance_type)
+        self.assertEqual(num_instances, 100)
+        db.quota_create(self.context, self.project_id, 'ram', -1)
         num_instances = quota.allowed_instances(self.context, 100,
                                                 instance_type)
         self.assertEqual(num_instances, 100)
@@ -180,6 +188,10 @@ class QuotaTestCase(test.TestCase):
         num_instances = quota.allowed_instances(self.context, 100,
                                                 instance_type)
         self.assertEqual(num_instances, 100)
+        db.quota_create(self.context, self.project_id, 'cores', -1)
+        num_instances = quota.allowed_instances(self.context, 100,
+                                                instance_type)
+        self.assertEqual(num_instances, 100)
         num_instances = quota.allowed_instances(self.context, 101,
                                                 instance_type)
         self.assertEqual(num_instances, 101)
@@ -189,6 +201,9 @@ class QuotaTestCase(test.TestCase):
         volumes = quota.allowed_volumes(self.context, 100, 1)
         self.assertEqual(volumes, 10)
         db.quota_create(self.context, self.project_id, 'volumes', None)
+        volumes = quota.allowed_volumes(self.context, 100, 1)
+        self.assertEqual(volumes, 100)
+        db.quota_create(self.context, self.project_id, 'volumes', -1)
         volumes = quota.allowed_volumes(self.context, 100, 1)
         self.assertEqual(volumes, 100)
         volumes = quota.allowed_volumes(self.context, 101, 1)
@@ -201,6 +216,9 @@ class QuotaTestCase(test.TestCase):
         db.quota_create(self.context, self.project_id, 'gigabytes', None)
         volumes = quota.allowed_volumes(self.context, 100, 1)
         self.assertEqual(volumes, 100)
+        db.quota_create(self.context, self.project_id, 'gigabytes', -1)
+        volumes = quota.allowed_volumes(self.context, 100, 1)
+        self.assertEqual(volumes, 100)
         volumes = quota.allowed_volumes(self.context, 101, 1)
         self.assertEqual(volumes, 101)
 
@@ -211,14 +229,48 @@ class QuotaTestCase(test.TestCase):
         db.quota_create(self.context, self.project_id, 'floating_ips', None)
         floating_ips = quota.allowed_floating_ips(self.context, 100)
         self.assertEqual(floating_ips, 100)
+        db.quota_create(self.context, self.project_id, 'floating_ips', -1)
+        floating_ips = quota.allowed_floating_ips(self.context, 100)
+        self.assertEqual(floating_ips, 100)
         floating_ips = quota.allowed_floating_ips(self.context, 101)
         self.assertEqual(floating_ips, 101)
+
+    def test_unlimited_security_groups(self):
+        self.flags(quota_security_groups=10)
+        security_groups = quota.allowed_security_groups(self.context, 100)
+        self.assertEqual(security_groups, 10)
+        db.quota_create(self.context, self.project_id, 'security_groups', None)
+        security_groups = quota.allowed_security_groups(self.context, 100)
+        self.assertEqual(security_groups, 100)
+        security_groups = quota.allowed_security_groups(self.context, 101)
+        self.assertEqual(security_groups, 101)
+
+    def test_unlimited_security_group_rules(self):
+
+        def fake_security_group_rule_count_by_group(context, sec_group_id):
+            return 0
+
+        self.stubs.Set(db, 'security_group_rule_count_by_group',
+                       fake_security_group_rule_count_by_group)
+
+        self.flags(quota_security_group_rules=20)
+        rules = quota.allowed_security_group_rules(self.context, 1234, 100)
+        self.assertEqual(rules, 20)
+        db.quota_create(self.context, self.project_id, 'security_group_rules',
+                        None)
+        rules = quota.allowed_security_group_rules(self.context, 1234, 100)
+        self.assertEqual(rules, 100)
+        rules = quota.allowed_security_group_rules(self.context, 1234, 101)
+        self.assertEqual(rules, 101)
 
     def test_unlimited_metadata_items(self):
         self.flags(quota_metadata_items=10)
         items = quota.allowed_metadata_items(self.context, 100)
         self.assertEqual(items, 10)
         db.quota_create(self.context, self.project_id, 'metadata_items', None)
+        items = quota.allowed_metadata_items(self.context, 100)
+        self.assertEqual(items, 100)
+        db.quota_create(self.context, self.project_id, 'metadata_items', -1)
         items = quota.allowed_metadata_items(self.context, 100)
         self.assertEqual(items, 100)
         items = quota.allowed_metadata_items(self.context, 101)

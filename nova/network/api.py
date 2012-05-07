@@ -27,7 +27,7 @@ from nova.rpc import common as rpc_common
 
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger('nova.network')
+LOG = logging.getLogger(__name__)
 
 
 class API(base.Base):
@@ -38,7 +38,7 @@ class API(base.Base):
                         FLAGS.network_topic,
                         {'method': 'get_all_networks'})
 
-    def get(self, context, fixed_range, network_uuid):
+    def get(self, context, network_uuid):
         return rpc.call(context,
                         FLAGS.network_topic,
                         {'method': 'get_network',
@@ -62,6 +62,12 @@ class API(base.Base):
                         FLAGS.network_topic,
                         {'method': 'get_fixed_ip',
                          'args': {'id': id}})
+
+    def get_fixed_ip_by_address(self, context, address):
+        return rpc.call(context,
+                        FLAGS.network_topic,
+                        {'method': 'get_fixed_ip_by_address',
+                         'args': {'address': address}})
 
     def get_floating_ip(self, context, id):
         return rpc.call(context,
@@ -157,7 +163,7 @@ class API(base.Base):
         args['instance_uuid'] = instance['uuid']
         args['project_id'] = instance['project_id']
         args['host'] = instance['host']
-        args['instance_type_id'] = instance['instance_type_id']
+        args['rxtx_factor'] = instance['instance_type']['rxtx_factor']
 
         nw_info = rpc.call(context, FLAGS.network_topic,
                            {'method': 'allocate_for_instance',
@@ -170,22 +176,25 @@ class API(base.Base):
         args = kwargs
         args['instance_id'] = instance['id']
         args['project_id'] = instance['project_id']
+        args['host'] = instance['host']
         rpc.cast(context, FLAGS.network_topic,
                  {'method': 'deallocate_for_instance',
                   'args': args})
 
-    def add_fixed_ip_to_instance(self, context, instance_id, host, network_id):
+    def add_fixed_ip_to_instance(self, context, instance, network_id):
         """Adds a fixed ip to instance from specified network."""
-        args = {'instance_id': instance_id,
-                'host': host,
+        args = {'instance_id': instance['id'],
+                'host': instance['host'],
                 'network_id': network_id}
         rpc.cast(context, FLAGS.network_topic,
                  {'method': 'add_fixed_ip_to_instance',
                   'args': args})
 
-    def remove_fixed_ip_from_instance(self, context, instance_id, address):
+    def remove_fixed_ip_from_instance(self, context, instance, address):
         """Removes a fixed ip from instance from specified network."""
-        args = {'instance_id': instance_id,
+
+        args = {'instance_id': instance['id'],
+                'host': instance['host'],
                 'address': address}
         rpc.cast(context, FLAGS.network_topic,
                  {'method': 'remove_fixed_ip_from_instance',
@@ -201,8 +210,9 @@ class API(base.Base):
         """Returns all network info related to an instance."""
         args = {'instance_id': instance['id'],
                 'instance_uuid': instance['uuid'],
-                'instance_type_id': instance['instance_type_id'],
-                'host': instance['host']}
+                'rxtx_factor': instance['instance_type']['rxtx_factor'],
+                'host': instance['host'],
+                'project_id': instance['project_id']}
         try:
             nw_info = rpc.call(context, FLAGS.network_topic,
                                {'method': 'get_instance_nw_info',
@@ -310,3 +320,20 @@ class API(base.Base):
         return rpc.call(context, FLAGS.network_topic,
                         {'method': 'create_public_dns_domain',
                          'args': args})
+
+    def setup_networks_on_host(self, context, instance, host=None,
+                                                        teardown=False):
+        """Setup or teardown the network structures on hosts related to
+           instance"""
+        host = host or instance['host']
+        # NOTE(tr3buchet): host is passed in cases where we need to setup
+        # or teardown the networks on a host which has been migrated to/from
+        # and instance['host'] is not yet or is no longer equal to
+        args = {'instance_id': instance['id'],
+                'host': host,
+                'teardown': teardown}
+
+        # NOTE(tr3buchet): the call is just to wait for completion
+        rpc.call(context, FLAGS.network_topic,
+                 {'method': 'setup_networks_on_host',
+                  'args': args})

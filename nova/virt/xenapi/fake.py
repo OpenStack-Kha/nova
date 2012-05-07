@@ -54,37 +54,38 @@ A fake XenAPI SDK.
 import json
 import random
 import uuid
-from xml.sax.saxutils import escape
+from xml.sax import saxutils
 
-from pprint import pformat
+import pprint
 
 from nova import exception
 from nova import log as logging
 from nova import utils
 
 
-_CLASSES = ['host', 'network', 'session', 'SR', 'VBD', 'pool',
+_CLASSES = ['host', 'network', 'session', 'pool', 'SR', 'VBD',
             'PBD', 'VDI', 'VIF', 'PIF', 'VM', 'VLAN', 'task']
 
 _db_content = {}
 
-LOG = logging.getLogger("nova.virt.xenapi.fake")
+LOG = logging.getLogger(__name__)
 
 
 def log_db_contents(msg=None):
     text = msg or ""
-    content = pformat(_db_content)
+    content = pprint.pformat(_db_content)
     LOG.debug(_("%(text)s: _db_content => %(content)s") % locals())
 
 
 def reset():
     for c in _CLASSES:
         _db_content[c] = {}
-    create_host('fake')
+    host = create_host('fake')
     create_vm('fake',
               'Running',
               is_a_template=False,
-              is_control_domain=True)
+              is_control_domain=True,
+              host_ref=host)
 
 
 def reset_table(table):
@@ -98,9 +99,11 @@ def create_pool(name_label):
                           {'name_label': name_label})
 
 
-def create_host(name_label):
+def create_host(name_label, hostname='fake_name', address='fake_addr'):
     return _create_object('host',
-                          {'name_label': name_label})
+                          {'name_label': name_label,
+                           'hostname': hostname,
+                           'address': address})
 
 
 def create_network(name_label, bridge):
@@ -110,14 +113,15 @@ def create_network(name_label, bridge):
 
 
 def create_vm(name_label, status,
-              is_a_template=False, is_control_domain=False):
+              is_a_template=False, is_control_domain=False, host_ref=None):
     domid = status == 'Running' and random.randrange(1, 1 << 16) or -1
     return _create_object('VM',
                           {'name_label': name_label,
                            'domid': domid,
                            'power-state': status,
                            'is_a_template': is_a_template,
-                           'is_control_domain': is_control_domain})
+                           'is_control_domain': is_control_domain,
+                           'resident_on': host_ref})
 
 
 def destroy_vm(vm_ref):
@@ -218,12 +222,16 @@ def create_local_srs():
                   other_config={'i18n-original-value-name_label':
                                 'Local storage',
                                 'i18n-key': 'local-storage'},
+                  physical_utilisation=20000,
+                  virtual_allocation=10000,
                   host_ref=host_ref)
         create_sr(name_label='Local storage ISO',
                   type='iso',
                   other_config={'i18n-original-value-name_label':
                                 'Local storage ISO',
                                 'i18n-key': 'local-storage-iso'},
+                  physical_utilisation=40000,
+                  virtual_allocation=80000,
                   host_ref=host_ref)
 
 
@@ -232,13 +240,14 @@ def create_sr(**kwargs):
              'SR',
              {'name_label': kwargs.get('name_label'),
               'type': kwargs.get('type'),
-              'content_type': 'user',
-              'shared': False,
-              'physical_size': str(1 << 30),
-              'physical_utilisation': str(0),
-              'virtual_allocation': str(0),
-              'other_config': kwargs.get('other_config'),
-              'VDIs': []})
+              'content_type': kwargs.get('type', 'user'),
+              'shared': kwargs.get('shared', False),
+              'physical_size': kwargs.get('physical_size', str(1 << 30)),
+              'physical_utilisation': str(
+                                        kwargs.get('physical_utilisation', 0)),
+              'virtual_allocation': str(kwargs.get('virtual_allocation', 0)),
+              'other_config': kwargs.get('other_config', {}),
+              'VDIs': kwargs.get('VDIs', [])})
     pbd_ref = create_pbd('', kwargs.get('host_ref'), sr_ref, True)
     _db_content['SR'][sr_ref]['PBDs'] = [pbd_ref]
     return sr_ref
@@ -252,6 +261,7 @@ def _create_local_pif(host_ref):
                               'VLAN': -1,
                               'device': 'fake0',
                               'host_uuid': host_ref})
+    return pif_ref
 
 
 def _create_object(table, obj):
@@ -316,7 +326,7 @@ def check_for_session_leaks():
 def as_value(s):
     """Helper function for simulating XenAPI plugin responses.  It
     escapes and wraps the given argument."""
-    return '<value>%s</value>' % escape(s)
+    return '<value>%s</value>' % saxutils.escape(s)
 
 
 def as_json(*args, **kwargs):
@@ -391,8 +401,6 @@ class SessionBase(object):
 
     def SR_introduce(self, _1, sr_uuid, label, desc, type, content_type,
                      shared, sm_config):
-        host_ref = _db_content['host'].keys()[0]
-
         ref = None
         rec = None
         for ref, rec in _db_content['SR'].iteritems():
@@ -428,7 +436,7 @@ class SessionBase(object):
         return
 
     def PIF_get_all_records_where(self, _1, _2):
-        # TODO (salvatore-orlando): filter table on _2
+        # TODO(salvatore-orlando): filter table on _2
         return _db_content['PIF']
 
     def VM_get_xenstore_data(self, _1, vm_ref):
@@ -446,6 +454,35 @@ class SessionBase(object):
             db_ref['xenstore_data'] = {}
         db_ref['xenstore_data'][key] = value
 
+    def VDI_remove_from_other_config(self, _1, vdi_ref, key):
+        db_ref = _db_content['VDI'][vdi_ref]
+        if not 'other_config' in db_ref:
+            return
+        db_ref['other_config'][key] = None
+
+    def VDI_add_to_other_config(self, _1, vdi_ref, key, value):
+        db_ref = _db_content['VDI'][vdi_ref]
+        if not 'other_config' in db_ref:
+            db_ref['other_config'] = {}
+        db_ref['other_config'][key] = value
+
+    def VDI_copy(self, _1, vdi_to_copy_ref, sr_ref):
+        db_ref = _db_content['VDI'][vdi_to_copy_ref]
+        name_label = db_ref['name_label']
+        read_only = db_ref['read_only']
+        sharable = db_ref['sharable']
+        vdi_ref = create_vdi(name_label, read_only, sr_ref, sharable)
+        return vdi_ref
+
+    def VDI_clone(self, _1, vdi_to_clone_ref):
+        db_ref = _db_content['VDI'][vdi_to_clone_ref]
+        name_label = db_ref['name_label']
+        read_only = db_ref['read_only']
+        sr_ref = db_ref['SR']
+        sharable = db_ref['sharable']
+        vdi_ref = create_vdi(name_label, read_only, sr_ref, sharable)
+        return vdi_ref
+
     def host_compute_free_memory(self, _1, ref):
         #Always return 12GB available
         return 12 * 1024 * 1024 * 1024
@@ -457,10 +494,24 @@ class SessionBase(object):
             return ''
         elif (plugin, method) == ('glance', 'upload_vhd'):
             return ''
+        elif (plugin, method) == ('glance', 'create_kernel_ramdisk'):
+            return ''
         elif (plugin, method) == ('migration', 'move_vhds_into_sr'):
             return ''
         elif (plugin, method) == ('migration', 'transfer_vhd'):
             return ''
+        elif (plugin, method) == ('xenhost', 'host_data'):
+            return json.dumps({'host_memory': {'total': 10,
+                                               'overhead': 20,
+                                               'free': 30,
+                                               'free-computed': 40}, })
+        elif (plugin == 'xenhost' and method in ['host_reboot',
+                                                 'host_startup',
+                                                 'host_shutdown']):
+            return json.dumps({"power_action": method[5:]})
+        elif (plugin, method) == ('xenhost', 'set_host_enabled'):
+            enabled = 'enabled' if _5.get('enabled') == 'true' else 'disabled'
+            return json.dumps({"status": enabled})
         else:
             raise Exception('No simulation in host_call_plugin for %s,%s' %
                             (plugin, method))
@@ -475,6 +526,15 @@ class SessionBase(object):
 
     def VM_clean_reboot(self, *args):
         return 'burp'
+
+    def pool_eject(self, session, host_ref):
+        pass
+
+    def pool_join(self, session, hostname, username, password):
+        pass
+
+    def pool_set_name_label(self, session, pool_ref, name):
+        pass
 
     def network_get_all_records_where(self, _1, filter):
         return self.xenapi.network.get_all_records()
@@ -498,9 +558,9 @@ class SessionBase(object):
 
     def _login(self, method, params):
         self._session = str(uuid.uuid4())
-        _db_content['session'][self._session] = \
-                                {'uuid': str(uuid.uuid4()),
-                                 'this_host': _db_content['host'].keys()[0]}
+        _session_info = {'uuid': str(uuid.uuid4()),
+                         'this_host': _db_content['host'].keys()[0]}
+        _db_content['session'][self._session] = _session_info
 
     def _logout(self):
         s = self._session
@@ -621,11 +681,11 @@ class SessionBase(object):
         expected = is_sr_create and 10 or is_vlan_create and 4 or 2
         self._check_arg_count(params, expected)
         (cls, _) = name.split('.')
-        ref = is_sr_create and \
-              _create_sr(cls, params) or \
-              is_vlan_create and \
-              _create_vlan(params[1], params[2], params[3]) or \
-              _create_object(cls, params[1])
+        ref = (is_sr_create and
+               _create_sr(cls, params) or
+               is_vlan_create and
+               _create_vlan(params[1], params[2], params[3]) or
+               _create_object(cls, params[1]))
 
         # Call hook to provide any fixups needed (ex. creating backrefs)
         after_hook = 'after_%s_create' % cls
@@ -637,13 +697,12 @@ class SessionBase(object):
         # Add RO fields
         if cls == 'VM':
             obj['power_state'] = 'Halted'
-
         return ref
 
     def _destroy(self, name, params):
         self._check_session(params)
         self._check_arg_count(params, 2)
-        table, _ = name.split('.')
+        table = name.split('.')[0]
         ref = params[1]
         if ref not in _db_content[table]:
             raise Failure(['HANDLE_INVALID', table, ref])

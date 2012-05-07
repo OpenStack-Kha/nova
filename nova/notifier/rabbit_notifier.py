@@ -17,17 +17,18 @@
 import nova.context
 
 from nova import flags
+from nova import log as logging
 from nova.openstack.common import cfg
 from nova import rpc
 
+LOG = logging.getLogger(__name__)
 
-notification_topic_opt = \
-    cfg.StrOpt('notification_topic',
-               default='notifications',
-               help='RabbitMQ topic used for Nova notifications')
+notification_topic_opt = cfg.ListOpt('notification_topics',
+        default=['notifications', ],
+        help='AMQP topic used for Nova notifications')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(notification_topic_opt)
+FLAGS.register_opt(notification_topic_opt)
 
 
 def notify(message):
@@ -36,5 +37,10 @@ def notify(message):
     priority = message.get('priority',
                            FLAGS.default_notification_level)
     priority = priority.lower()
-    topic = '%s.%s' % (FLAGS.notification_topic, priority)
-    rpc.notify(context, topic, message)
+    for topic in FLAGS.notification_topics:
+        topic = '%s.%s' % (topic, priority)
+        try:
+            rpc.notify(context, topic, message)
+        except Exception, e:
+            LOG.exception(_("Could not send notification to %(topic)s. "
+                            "Payload=%(message)s" % locals()))

@@ -21,23 +21,14 @@
 
 import os
 import random
-import shutil
 
 from nova import exception
 from nova import flags
-from nova.openstack.common import cfg
 from nova import utils
-from nova.virt.disk import api as disk
 from nova.virt import images
 
 
-qemu_img_opt = \
-    cfg.StrOpt('qemu_img',
-               default='qemu-img',
-               help='binary to use for qemu-img commands')
-
 FLAGS = flags.FLAGS
-FLAGS.add_option(qemu_img_opt)
 
 
 def execute(*args, **kwargs):
@@ -62,11 +53,11 @@ def create_image(disk_format, path, size):
     :param size: Desired size of disk image. May be given as an int or
                  a string. If given as an int, it will be interpreted
                  as bytes. If it's a string, it should consist of a number
-                 followed by an optional prefix ('k' for kilobytes, 'm'
-                 for megabytes, 'g' for gigabytes, 't' for terabytes). If no
-                 prefix is given, it will be interpreted as bytes.
+                 with an optional suffix ('K' for Kibibytes,
+                 M for Mebibytes, 'G' for Gibibytes, 'T' for Tebibytes).
+                 If no suffix is given, it will be interpreted as bytes.
     """
-    execute(FLAGS.qemu_img, 'create', '-f', disk_format, path, size)
+    execute('qemu-img', 'create', '-f', disk_format, path, size)
 
 
 def create_cow_image(backing_file, path):
@@ -77,7 +68,7 @@ def create_cow_image(backing_file, path):
     :param backing_file: Existing image on which to base the COW image
     :param path: Desired location of the COW image
     """
-    execute(FLAGS.qemu_img, 'create', '-f', 'qcow2', '-o',
+    execute('qemu-img', 'create', '-f', 'qcow2', '-o',
              'cluster_size=2M,backing_file=%s' % backing_file, path)
 
 
@@ -88,7 +79,7 @@ def get_disk_size(path):
     :returns: Size (in bytes) of the given disk image as it would be seen
               by a virtual machine.
     """
-    out, err = execute(FLAGS.qemu_img, 'info', path)
+    out, err = execute('qemu-img', 'info', path)
     size = [i.split('(')[1].split()[0] for i in out.split('\n')
         if i.strip().find('virtual size') >= 0]
     return int(size[0])
@@ -100,10 +91,11 @@ def get_disk_backing_file(path):
     :param path: Path to the disk image
     :returns: a path to the image's backing store
     """
-    out, err = execute(FLAGS.qemu_img, 'info', path)
+    out, err = execute('qemu-img', 'info', path)
     backing_file = [i.split('actual path:')[1].strip()[:-1]
         for i in out.split('\n') if 0 <= i.find('backing file')]
-    backing_file = os.path.basename(backing_file[0])
+    if backing_file:
+        backing_file = os.path.basename(backing_file[0])
     return backing_file
 
 
@@ -120,17 +112,22 @@ def copy_image(src, dest):
     execute('cp', src, dest)
 
 
-def mkfs(fs, path):
+def mkfs(fs, path, label=None):
     """Format a file or block device
 
     :param fs: Filesystem type (examples include 'swap', 'ext3', 'ext4'
                'btrfs', etc.)
     :param path: Path to file or block device to format
+    :param label: Volume label to use
     """
     if fs == 'swap':
         execute('mkswap', path)
     else:
-        execute('mkfs', '-t', fs, path)
+        args = ['mkfs', '-t', fs]
+        if label:
+            args.extend(['-n', label])
+        args.append(path)
+        execute(*args)
 
 
 def ensure_tree(path):
@@ -165,7 +162,37 @@ def chown(path, owner):
     :param path: File or directory whose ownership to change
     :param owner: Desired new owner (given as uid or username)
     """
-    utils.execute('chown', owner, path, run_as_root=True)
+    execute('chown', owner, path, run_as_root=True)
+
+
+def create_snapshot(disk_path, snapshot_name):
+    """Create a snapshot in a disk image
+
+    :param disk_path: Path to disk image
+    :param snapshot_name: Name of snapshot in disk image
+    """
+    qemu_img_cmd = ('qemu-img',
+                    'snapshot',
+                    '-c',
+                    snapshot_name,
+                    disk_path)
+    # NOTE(vish): libvirt changes ownership of images
+    execute(*qemu_img_cmd, run_as_root=True)
+
+
+def delete_snapshot(disk_path, snapshot_name):
+    """Create a snapshot in a disk image
+
+    :param disk_path: Path to disk image
+    :param snapshot_name: Name of snapshot in disk image
+    """
+    qemu_img_cmd = ('qemu-img',
+                    'snapshot',
+                    '-d',
+                    snapshot_name,
+                    disk_path)
+    # NOTE(vish): libvirt changes ownership of images
+    execute(*qemu_img_cmd, run_as_root=True)
 
 
 def extract_snapshot(disk_path, source_fmt, snapshot_name, out_path, dest_fmt):
@@ -175,7 +202,7 @@ def extract_snapshot(disk_path, source_fmt, snapshot_name, out_path, dest_fmt):
     :param snapshot_name: Name of snapshot in disk image
     :param out_path: Desired path of extracted snapshot
     """
-    qemu_img_cmd = (FLAGS.qemu_img,
+    qemu_img_cmd = ('qemu-img',
                     'convert',
                     '-f',
                     source_fmt,
@@ -258,4 +285,4 @@ def get_fs_info(path):
 
 def fetch_image(context, target, image_id, user_id, project_id):
     """Grab image"""
-    images.fetch(context, image_id, target, user_id, project_id)
+    images.fetch_to_raw(context, image_id, target, user_id, project_id)

@@ -43,16 +43,17 @@ from nova import context
 from nova import exception
 from nova import flags
 from nova import local
+from nova import log as logging
 from nova.rpc import common as rpc_common
-from nova.rpc.common import RemoteError, LOG
 from nova.testing import fake
-
-# Needed for tests
-eventlet.monkey_patch()
+from nova import utils
 
 FLAGS = flags.FLAGS
+LOG = logging.getLogger(__name__)
 
 
+@utils.deprecated('Use of carrot will be removed in a future release. '
+        'Use kombu, instead.')
 class Connection(carrot_connection.BrokerConnection, rpc_common.Connection):
     """Connection instance object."""
 
@@ -227,7 +228,7 @@ class Consumer(messaging.Consumer):
         #             persistent failure occurs.
         except Exception, e:  # pylint: disable=W0703
             if not self.failed_connection:
-                LOG.exception(_('Failed to fetch message from queue: %s' % e))
+                LOG.exception(_('Failed to fetch message from queue: %s') % e)
                 self.failed_connection = True
 
 
@@ -283,7 +284,7 @@ class AdapterConsumer(Consumer):
         """Thread that magically looks for a method on the proxy
         object and calls it.
         """
-
+        ctxt.update_store()
         node_func = getattr(self.proxy, str(method))
         node_args = dict((str(k), v) for k, v in args.iteritems())
         # NOTE(vish): magic is fun!
@@ -401,8 +402,8 @@ class TopicPublisher(Publisher):
     def __init__(self, connection=None, topic='broadcast', durable=None):
         self.routing_key = topic
         self.exchange = FLAGS.control_exchange
-        self.durable = FLAGS.rabbit_durable_queues \
-                       if durable is None else durable
+        self.durable = (FLAGS.rabbit_durable_queues if durable is None
+                                                    else durable)
         super(TopicPublisher, self).__init__(connection=connection)
 
 
@@ -562,7 +563,7 @@ class MulticallWaiter(object):
         """Acks message and sets result."""
         message.ack()
         if data['failure']:
-            self._results.put(RemoteError(*data['failure']))
+            self._results.put(rpc_common.RemoteError(*data['failure']))
         elif data.get('ending', False):
             self._got_ending = True
         else:

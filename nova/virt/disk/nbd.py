@@ -34,7 +34,7 @@ nbd_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(nbd_opts)
+FLAGS.register_opts(nbd_opts)
 
 
 class Mount(mount.Mount):
@@ -54,6 +54,9 @@ class Mount(mount.Mount):
     _DEVICES = ['/dev/nbd%s' % i for i in range(FLAGS.max_nbd_devices)]
 
     def _allocate_nbd(self):
+        if not os.path.exists("/sys/block/nbd0"):
+            self.error = _('nbd unavailable: module not loaded')
+            return None
         while True:
             if not self._DEVICES:
                 # really want to log this info, not raise

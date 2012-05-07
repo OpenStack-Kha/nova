@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2011 Openstack, LLC.
+# Copyright (c) 2011 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -66,12 +66,15 @@ filterlist = [
     # nova/virt/libvirt/connection.py: 'chown', os.getuid(), console_log
     # nova/virt/libvirt/connection.py: 'chown', os.getuid(), console_log
     # nova/virt/libvirt/connection.py: 'chown', 'root', basepath('disk')
-    # nova/virt/xenapi/vm_utils.py: 'chown', os.getuid(), dev_path
+    # nova/utils.py: 'chown', owner_uid, path
     filters.CommandFilter("/bin/chown", "root"),
 
     # nova/virt/disk/api.py: 'chmod', '700', sshdir
     # nova/virt/disk/api.py: 'chmod', 755, netdir
     filters.CommandFilter("/bin/chmod", "root"),
+
+    # nova/virt/disk/api.py: 'cp', os.path.join(fs...
+    filters.CommandFilter("/bin/cp", "root"),
 
     # nova/virt/libvirt/vif.py: 'ip', 'tuntap', 'add', dev, 'mode', 'tap'
     # nova/virt/libvirt/vif.py: 'ip', 'link', 'set', dev, 'up'
@@ -95,12 +98,16 @@ filterlist = [
     filters.CommandFilter("/sbin/ip", "root"),
 
     # nova/virt/libvirt/vif.py: 'tunctl', '-b', '-t', dev
+    # nova/network/linux_net.py: 'tunctl', '-b', '-t', dev
     filters.CommandFilter("/usr/sbin/tunctl", "root"),
 
     # nova/virt/libvirt/vif.py: 'ovs-vsctl', ...
     # nova/virt/libvirt/vif.py: 'ovs-vsctl', 'del-port', ...
     # nova/network/linux_net.py: 'ovs-vsctl', ....
     filters.CommandFilter("/usr/bin/ovs-vsctl", "root"),
+
+    # nova/network/linux_net.py: 'ovs-ofctl', ....
+    filters.CommandFilter("/usr/bin/ovs-ofctl", "root"),
 
     # nova/virt/libvirt/connection.py: 'dd', "if=%s" % virsh_output, ...
     filters.CommandFilter("/bin/dd", "root"),
@@ -169,6 +176,16 @@ filterlist = [
     # nova/virt/xenapi/vm_utils.py: 'mkswap'
     filters.CommandFilter("/sbin/mkswap", "root"),
 
+    # nova/virt/xenapi/vm_utils.py: 'mkfs'
+    filters.CommandFilter("/sbin/mkfs", "root"),
+
+    # nova/virt/libvirt/utils.py: 'qemu-img'
+    filters.CommandFilter("/usr/bin/qemu-img", "root"),
+
+    # nova/virt/disk/api.py: 'touch', target
+    filters.CommandFilter("/usr/bin/touch", "root"),
+
     # nova/virt/libvirt/connection.py:
     filters.ReadFileFilter("/etc/iscsi/initiatorname.iscsi"),
+
     ]

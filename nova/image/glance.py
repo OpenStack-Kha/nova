@@ -23,8 +23,9 @@ import copy
 import datetime
 import json
 import random
+import sys
 import time
-from urlparse import urlparse
+import urlparse
 
 from glance.common import exception as glance_exception
 
@@ -34,7 +35,7 @@ from nova import log as logging
 from nova import utils
 
 
-LOG = logging.getLogger('nova.image.glance')
+LOG = logging.getLogger(__name__)
 
 
 FLAGS = flags.FLAGS
@@ -51,7 +52,7 @@ def _parse_image_ref(image_href):
     :raises ValueError
 
     """
-    o = urlparse(image_href)
+    o = urlparse.urlparse(image_href)
     port = o.port or 80
     host = o.netloc.split(':', 1)[0]
     image_id = o.path.split('/')[-1]
@@ -59,7 +60,7 @@ def _parse_image_ref(image_href):
 
 
 def _create_glance_client(context, host, port):
-    if context.strategy == 'keystone':
+    if FLAGS.auth_strategy == 'keystone':
         # NOTE(dprince): Glance client just needs auth_tok right? Should we
         # add username and tenant to the creds below?
         creds = {'strategy': 'keystone',
@@ -110,13 +111,13 @@ def get_glance_client(context, image_href):
 
     else:
         try:
-            (image_id, host, port) = _parse_image_ref(image_href)
+            (image_id, glance_host, glance_port) = _parse_image_ref(image_href)
+            glance_client = _create_glance_client(context,
+                                                  glance_host,
+                                                  glance_port)
         except ValueError:
             raise exception.InvalidImageRef(image_href=image_href)
 
-        glance_client = _create_glance_client(context,
-                                              glance_host,
-                                              glance_port)
         return (glance_client, image_id)
 
 
@@ -134,6 +135,22 @@ class GlanceImageService(object):
             return self._client
         glance_host, glance_port = pick_glance_api_server()
         return _create_glance_client(context, glance_host, glance_port)
+
+    def _call_retry(self, context, name, *args, **kwargs):
+        """Retry call to glance server if there is a connection error.
+        Suitable only for idempotent calls."""
+        for i in xrange(FLAGS.glance_num_retries + 1):
+            client = self._get_client(context)
+            try:
+                return getattr(client, name)(*args, **kwargs)
+            except glance_exception.ClientConnectionError as e:
+                LOG.exception(_('Connection error contacting glance'
+                                ' server, retrying'))
+
+                time.sleep(1)
+
+        raise exception.GlanceConnectionFailed(
+                reason=_('Maximum attempts reached'))
 
     def index(self, context, **kwargs):
         """Calls out to Glance for a list of images available."""
@@ -185,7 +202,10 @@ class GlanceImageService(object):
 
     def _fetch_images(self, fetch_func, **kwargs):
         """Paginate through results from glance server"""
-        images = fetch_func(**kwargs)
+        try:
+            images = fetch_func(**kwargs)
+        except Exception:
+            _reraise_translated_exception()
 
         if not images:
             # break out of recursive loop to end pagination
@@ -215,9 +235,10 @@ class GlanceImageService(object):
     def show(self, context, image_id):
         """Returns a dict with image data for the given opaque image id."""
         try:
-            image_meta = self._get_client(context).get_image_meta(image_id)
-        except glance_exception.NotFound:
-            raise exception.ImageNotFound(image_id=image_id)
+            image_meta = self._call_retry(context, 'get_image_meta',
+                                          image_id)
+        except Exception:
+            _reraise_translated_image_exception(image_id)
 
         if not self._is_image_available(context, image_meta):
             raise exception.ImageNotFound(image_id=image_id)
@@ -235,18 +256,11 @@ class GlanceImageService(object):
 
     def get(self, context, image_id, data):
         """Calls out to Glance for metadata and data and writes data."""
-        num_retries = FLAGS.glance_num_retries
-        for count in xrange(1 + num_retries):
-            client = self._get_client(context)
-            try:
-                image_meta, image_chunks = client.get_image(image_id)
-                break
-            except glance_exception.NotFound:
-                raise exception.ImageNotFound(image_id=image_id)
-            except Exception:
-                if count == num_retries:
-                    raise
-            time.sleep(1)
+        try:
+            image_meta, image_chunks = self._call_retry(context, 'get_image',
+                                                        image_id)
+        except Exception:
+            _reraise_translated_image_exception(image_id)
 
         for chunk in image_chunks:
             data.write(chunk)
@@ -285,11 +299,11 @@ class GlanceImageService(object):
         # NOTE(vish): show is to check if image is available
         self.show(context, image_id)
         image_meta = self._translate_to_glance(image_meta)
+        client = self._get_client(context)
         try:
-            client = self._get_client(context)
             image_meta = client.update_image(image_id, image_meta, data)
-        except glance_exception.NotFound:
-            raise exception.ImageNotFound(image_id=image_id)
+        except Exception:
+            _reraise_translated_image_exception(image_id)
 
         base_image_meta = self._translate_from_glance(image_meta)
         return base_image_meta
@@ -304,11 +318,11 @@ class GlanceImageService(object):
         # NOTE(vish): show is to check if image is available
         image_meta = self.show(context, image_id)
 
-        if FLAGS.use_deprecated_auth:
+        if FLAGS.auth_strategy == 'deprecated':
             # NOTE(parthi): only allow image deletions if the user
             # is a member of the project owning the image, in case of
             # setup without keystone
-            # TODO Currently this access control breaks if
+            # TODO(parthi): Currently this access control breaks if
             # 1. Image is not owned by a project
             # 2. Deleting user is not bound a project
             properties = image_meta['properties']
@@ -454,3 +468,41 @@ def _remove_read_only(image_meta):
         if attr in output:
             del output[attr]
     return output
+
+
+def _reraise_translated_image_exception(image_id):
+    """Transform the exception for the image but keep its traceback intact."""
+    exc_type, exc_value, exc_trace = sys.exc_info()
+    new_exc = _translate_image_exception(image_id, exc_type, exc_value)
+    raise new_exc, None, exc_trace
+
+
+def _reraise_translated_exception():
+    """Transform the exception but keep its traceback intact."""
+    exc_type, exc_value, exc_trace = sys.exc_info()
+    new_exc = _translate_plain_exception(exc_type, exc_value)
+    raise new_exc, None, exc_trace
+
+
+def _translate_image_exception(image_id, exc_type, exc_value):
+    if exc_type in (glance_exception.Forbidden,
+                    glance_exception.NotAuthenticated,
+                    glance_exception.MissingCredentialError):
+        return exception.ImageNotAuthorized(image_id=image_id)
+    if exc_type is glance_exception.NotFound:
+        return exception.ImageNotFound(image_id=image_id)
+    if exc_type is glance_exception.Invalid:
+        return exception.Invalid(exc_value)
+    return exc_value
+
+
+def _translate_plain_exception(exc_type, exc_value):
+    if exc_type in (glance_exception.Forbidden,
+                    glance_exception.NotAuthenticated,
+                    glance_exception.MissingCredentialError):
+        return exception.NotAuthorized(exc_value)
+    if exc_type is glance_exception.NotFound:
+        return exception.NotFound(exc_value)
+    if exc_type is glance_exception.Invalid:
+        return exception.Invalid(exc_value)
+    return exc_value

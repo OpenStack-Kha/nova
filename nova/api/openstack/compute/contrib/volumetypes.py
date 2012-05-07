@@ -47,21 +47,21 @@ class VolumeTypeTemplate(xmlutil.TemplateBuilder):
 class VolumeTypesTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('volume_types')
-        sel = lambda obj, do_raise=False: obj.values()
-        elem = xmlutil.SubTemplateElement(root, 'volume_type', selector=sel)
+        elem = xmlutil.SubTemplateElement(root, 'volume_type',
+                                          selector='volume_types')
         make_voltype(elem)
         return xmlutil.MasterTemplate(root, 1)
 
 
 class VolumeTypesController(object):
-    """ The volume types API controller for the Openstack API """
+    """ The volume types API controller for the OpenStack API """
 
     @wsgi.serializers(xml=VolumeTypesTemplate)
     def index(self, req):
         """ Returns the list of volume types """
         context = req.environ['nova.context']
         authorize(context)
-        return volume_types.get_all_types(context)
+        return {'volume_types': volume_types.get_all_types(context).values()}
 
     @wsgi.serializers(xml=VolumeTypeTemplate)
     def create(self, req, body):
@@ -100,7 +100,7 @@ class VolumeTypesController(object):
 
         try:
             vol_type = volume_types.get_volume_type(context, id)
-        except exception.NotFound or exception.ApiError:
+        except exception.NotFound:
             raise exc.HTTPNotFound()
 
         return {'volume_type': vol_type}
@@ -144,7 +144,7 @@ class VolumeTypeExtraSpecTemplate(xmlutil.TemplateBuilder):
 
 
 class VolumeTypeExtraSpecsController(object):
-    """ The volume type extra specs API controller for the Openstack API """
+    """ The volume type extra specs API controller for the OpenStack API """
 
     def _get_extra_specs(self, context, vol_type_id):
         extra_specs = db.volume_type_extra_specs_get(context, vol_type_id)

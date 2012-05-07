@@ -28,14 +28,29 @@ from nova.openstack.common import cfg
 from nova import wsgi
 
 
-use_forwarded_for_opt = \
-    cfg.BoolOpt('use_forwarded_for',
-                default=False,
-                help='Treat X-Forwarded-For as the canonical remote address. '
-                     'Only enable this if you have a sanitizing proxy.')
+use_forwarded_for_opt = cfg.BoolOpt('use_forwarded_for',
+        default=False,
+        help='Treat X-Forwarded-For as the canonical remote address. '
+             'Only enable this if you have a sanitizing proxy.')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(use_forwarded_for_opt)
+FLAGS.register_opt(use_forwarded_for_opt)
+LOG = logging.getLogger(__name__)
+
+
+def pipeline_factory(loader, global_conf, **local_conf):
+    """A paste pipeline replica that keys off of auth_strategy."""
+    pipeline = local_conf[FLAGS.auth_strategy]
+    if not FLAGS.api_rate_limit:
+        limit_name = FLAGS.auth_strategy + '_nolimit'
+        pipeline = local_conf.get(limit_name, pipeline)
+    pipeline = pipeline.split()
+    filters = [loader.get_filter(n) for n in pipeline[:-1]]
+    app = loader.get_app(pipeline[-1])
+    filters.reverse()
+    for filter in filters:
+        app = filter(app)
+    return app
 
 
 class InjectContext(wsgi.Middleware):
@@ -59,7 +74,7 @@ class NovaKeystoneContext(wsgi.Middleware):
         user_id = req.headers.get('X_USER')
         user_id = req.headers.get('X_USER_ID', user_id)
         if user_id is None:
-            logging.debug("Neither X_USER_ID nor X_USER found in request")
+            LOG.debug("Neither X_USER_ID nor X_USER found in request")
             return webob.exc.HTTPUnauthorized()
         # get the roles
         roles = [r.strip() for r in req.headers.get('X_ROLE', '').split(',')]
@@ -75,7 +90,6 @@ class NovaKeystoneContext(wsgi.Middleware):
                                      req.headers.get('X_STORAGE_TOKEN'))
 
         # Build a context, including the auth_token...
-        remote_address = getattr(req, 'remote_address', '127.0.0.1')
         remote_address = req.remote_addr
         if FLAGS.use_forwarded_for:
             remote_address = req.headers.get('X-Forwarded-For', remote_address)
@@ -83,7 +97,6 @@ class NovaKeystoneContext(wsgi.Middleware):
                                      project_id,
                                      roles=roles,
                                      auth_token=auth_token,
-                                     strategy='keystone',
                                      remote_address=remote_address)
 
         req.environ['nova.context'] = ctx

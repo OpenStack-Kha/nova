@@ -37,7 +37,7 @@ def notify_usage_exists(instance_ref, current_period=False):
 
         Generates usage for last completed period, unless 'current_period'
         is True."""
-    admin_context = context.get_admin_context()
+    admin_context = context.get_admin_context(read_deleted='yes')
     begin, end = utils.current_audit_period()
     bw = {}
     if current_period:
@@ -56,9 +56,10 @@ def notify_usage_exists(instance_ref, current_period=False):
         nw_info = network.API().get_instance_nw_info(admin_context,
                                                          instance_ref)
 
-    for b in db.bw_usage_get_by_instance(admin_context,
-                                         instance_ref['id'],
-                                         audit_start):
+    macs = [vif['address'] for vif in nw_info]
+    for b in db.bw_usage_get_by_macs(admin_context,
+                                     macs,
+                                     audit_start):
         label = 'net-name-not-found-%s' % b['mac']
         for vif in nw_info:
             if vif['address'] == b['mac']:
@@ -168,7 +169,7 @@ def legacy_network_info(network_model):
                          mac=vif['address'],
                          vif_uuid=vif['id'],
                          rxtx_cap=get_meta(network, 'rxtx_cap', 0),
-                         dns=[get_ip(ip) for ip in subnet['dns']],
+                         dns=[get_ip(ip) for ip in subnet_v4['dns']],
                          ips=[fixed_ip_dict(ip, subnet)
                               for subnet in v4_subnets
                               for ip in subnet['ips']],

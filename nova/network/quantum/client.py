@@ -114,6 +114,7 @@ class Client(object):
         :param testing_stub: A class that stubs basic server methods for tests
         :param key_file: The SSL key file to use if use_ssl is true
         :param cert_file: The SSL cert file to use if use_ssl is true
+        :param logger: logging object to be used by client library
         """
         self.host = host
         self.port = port
@@ -176,8 +177,8 @@ class Client(object):
 
             if self.logger:
                 self.logger.debug(
-                    _("Quantum Client Request:\n%(method)s %(action)s\n" %
-                                    locals()))
+                    _("Quantum Client Request: %(method)s %(action)s") %
+                                    locals())
                 if body:
                     self.logger.debug(body)
 
@@ -187,12 +188,12 @@ class Client(object):
             data = res.read()
 
             if self.logger:
-                self.logger.debug("Quantum Client Reply (code = %s) :\n %s" \
-                        % (str(status_code), data))
+                self.logger.debug("Quantum Client Reply (code = %s) :\n %s" %
+                                  (str(status_code), data))
 
             if status_code in NOT_FOUND_CODES:
                 raise QuantumNotFoundException(
-                    _("Quantum entity not found: %s" % data))
+                    _("Quantum entity not found: %s") % data)
 
             if status_code in (httplib.OK,
                                httplib.CREATED,
@@ -202,12 +203,12 @@ class Client(object):
                     return self.deserialize(data, status_code)
             else:
                 raise QuantumServerException(
-                      _("Server %(status_code)s error: %(data)s"
-                                        % locals()))
+                      _("Server %(status_code)s error: %(data)s")
+                                        % locals())
 
         except (socket.error, IOError), e:
             raise QuantumIOException(_("Unable to connect to "
-                              "server. Got error: %s" % e))
+                              "server. Got error: %s") % e)
 
     def get_status_code(self, response):
         """Returns the integer status code from the response, which
@@ -224,8 +225,8 @@ class Client(object):
         elif isinstance(data, dict):
             return JSONSerializer().serialize(data, self.content_type())
         else:
-            raise Exception(_("unable to deserialize object of type = '%s'" %
-                              type(data)))
+            raise Exception(_("unable to deserialize object of type = '%s'") %
+                              type(data))
 
     def deserialize(self, data, status_code):
         return JSONSerializer().deserialize(data, self.content_type())
@@ -238,8 +239,7 @@ class Client(object):
     @api_call
     def list_networks(self, filter_ops=None):
         """Fetches a list of all networks for a tenant"""
-        url = self.networks_path
-        return self.do_request("GET", url, params=filter_ops)
+        return self.do_request("GET", self.networks_path, params=filter_ops)
 
     @api_call
     def show_network_details(self, network):
@@ -266,8 +266,8 @@ class Client(object):
     @api_call
     def list_ports(self, network, filter_ops=None):
         """Fetches a list of ports on a given network"""
-        url = self.ports_path % (network)
-        return self.do_request("GET", url, params=filter_ops)
+        return self.do_request("GET", self.ports_path % (network),
+                                     params=filter_ops)
 
     @api_call
     def show_port_details(self, network, port):

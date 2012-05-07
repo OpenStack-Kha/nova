@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2010 Openstack, LLC.
+# Copyright (c) 2010 OpenStack, LLC.
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
@@ -29,7 +29,8 @@ from nova.scheduler import driver
 
 multi_scheduler_opts = [
     cfg.StrOpt('compute_scheduler_driver',
-               default='nova.scheduler.chance.ChanceScheduler',
+               default='nova.scheduler.'
+                    'filter_scheduler.FilterScheduler',
                help='Driver to use for scheduling compute calls'),
     cfg.StrOpt('volume_scheduler_driver',
                default='nova.scheduler.chance.ChanceScheduler',
@@ -37,13 +38,11 @@ multi_scheduler_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(multi_scheduler_opts)
+FLAGS.register_opts(multi_scheduler_opts)
 
 # A mapping of methods to topics so we can figure out which driver to use.
-_METHOD_MAP = {'run_instance': 'compute',
-               'prep_resize': 'compute',
-               'live_migration': 'compute',
-               'create_volume': 'volume',
+# There are currently no compute methods proxied through the map
+_METHOD_MAP = {'create_volume': 'volume',
                'create_volumes': 'volume'}
 
 
@@ -71,10 +70,12 @@ class MultiScheduler(driver.Scheduler):
             raise AttributeError(key)
         return getattr(self.drivers[_METHOD_MAP[method]], key)
 
-    def set_zone_manager(self, zone_manager):
-        for k, v in self.drivers.iteritems():
-            v.set_zone_manager(zone_manager)
-
     def schedule(self, context, topic, method, *_args, **_kwargs):
         return self.drivers[topic].schedule(context, topic,
                 method, *_args, **_kwargs)
+
+    def schedule_run_instance(self, *args, **kwargs):
+        return self.drivers['compute'].schedule_run_instance(*args, **kwargs)
+
+    def schedule_prep_resize(self, *args, **kwargs):
+        return self.drivers['compute'].schedule_prep_resize(*args, **kwargs)

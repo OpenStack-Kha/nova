@@ -38,15 +38,14 @@ from nova.virt.vmwareapi import vmware_images
 from nova.virt.vmwareapi import network_utils
 
 
-vmware_vif_driver_opt = \
-    cfg.StrOpt('vmware_vif_driver',
-               default='nova.virt.vmwareapi.vif.VMWareVlanBridgeDriver',
-               help='The VMWare VIF driver to configure the VIFs.')
+vmware_vif_driver_opt = cfg.StrOpt('vmware_vif_driver',
+        default='nova.virt.vmwareapi.vif.VMWareVlanBridgeDriver',
+        help='The VMWare VIF driver to configure the VIFs.')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(vmware_vif_driver_opt)
+FLAGS.register_opt(vmware_vif_driver_opt)
 
-LOG = logging.getLogger("nova.virt.vmwareapi.vmops")
+LOG = logging.getLogger(__name__)
 
 VMWARE_POWER_STATES = {
                    'poweredOff': power_state.SHUTDOWN,
@@ -88,12 +87,13 @@ class VMWareVMOps(object):
         Creates a VM instance.
 
         Steps followed are:
+
         1. Create a VM with no disk and the specifics in the instance object
-            like RAM size.
+           like RAM size.
         2. Create a dummy vmdk of the size of the disk file that is to be
-            uploaded. This is required just to create the metadata file.
+           uploaded. This is required just to create the metadata file.
         3. Delete the -flat.vmdk file created in the above step and retain
-            the metadata .vmdk file.
+           the metadata .vmdk file.
         4. Upload the disk file.
         5. Attach the disk to the VM by reconfiguring the same.
         6. Power on the VM.
@@ -124,7 +124,7 @@ class VMWareVMOps(object):
 
             if data_store_name is None:
                 msg = _("Couldn't get a local Datastore reference")
-                LOG.exception(msg)
+                LOG.error(msg)
                 raise exception.Error(msg)
 
         data_store_name = _get_datastore_ref()
@@ -134,9 +134,10 @@ class VMWareVMOps(object):
             Get the Size of the flat vmdk file that is there on the storage
             repository.
             """
-            image_size, image_properties = \
-                    vmware_images.get_vmdk_size_and_properties(context,
-                                       instance.image_ref, instance)
+            _image_info = vmware_images.get_vmdk_size_and_properties(context,
+                                                          instance.image_ref,
+                                                          instance)
+            image_size, image_properties = _image_info
             vmdk_file_size_in_kb = int(image_size) / 1024
             os_type = image_properties.get("vmware_ostype", "otherGuest")
             adapter_type = image_properties.get("vmware_adaptertype",
@@ -161,9 +162,8 @@ class VMWareVMOps(object):
         vm_folder_mor, res_pool_mor = _get_vmfolder_and_res_pool_mors()
 
         def _check_if_network_bridge_exists(network_name):
-            network_ref = \
-                network_utils.get_network_with_the_name(self._session,
-                                                        network_name)
+            network_ref = network_utils.get_network_with_the_name(
+                          self._session, network_name)
             if network_ref is None:
                 raise exception.NetworkNotFoundForBridge(bridge=network_name)
             return network_ref
@@ -336,16 +336,17 @@ class VMWareVMOps(object):
         _power_on_vm()
 
     def snapshot(self, context, instance, snapshot_name):
-        """
-        Create snapshot from a running VM instance.
+        """Create snapshot from a running VM instance.
+
         Steps followed are:
+
         1. Get the name of the vmdk file which the VM points to right now.
-            Can be a chain of snapshots, so we need to know the last in the
-            chain.
+           Can be a chain of snapshots, so we need to know the last in the
+           chain.
         2. Create the snapshot. A new vmdk is created which the VM points to
-            now. The earlier vmdk becomes read-only.
+           now. The earlier vmdk becomes read-only.
         3. Call CopyVirtualDisk which coalesces the disk chain to form a single
-            vmdk, rather a .vmdk metadata file and a -flat.vmdk disk data file.
+           vmdk, rather a .vmdk metadata file and a -flat.vmdk disk data file.
         4. Now upload the -flat.vmdk file to the image store.
         5. Delete the coalesced .vmdk and -flat.vmdk created.
         """
@@ -361,9 +362,9 @@ class VMWareVMOps(object):
             hardware_devices = self._session._call_method(vim_util,
                         "get_dynamic_property", vm_ref,
                         "VirtualMachine", "config.hardware.device")
-            vmdk_file_path_before_snapshot, adapter_type = \
-                vm_util.get_vmdk_file_path_and_adapter_type(client_factory,
-                                                            hardware_devices)
+            _vmdk_info = vm_util.get_vmdk_file_path_and_adapter_type(
+                         client_factory, hardware_devices)
+            vmdk_file_path_before_snapshot, adapter_type = _vmdk_info
             datastore_name = vm_util.split_datastore_path(
                                       vmdk_file_path_before_snapshot)[0]
             os_type = self._session._call_method(vim_util,
@@ -372,8 +373,8 @@ class VMWareVMOps(object):
             return (vmdk_file_path_before_snapshot, adapter_type,
                     datastore_name, os_type)
 
-        vmdk_file_path_before_snapshot, adapter_type, datastore_name,\
-            os_type = _get_vm_and_vmdk_attribs()
+        (vmdk_file_path_before_snapshot, adapter_type, datastore_name,
+         os_type) = _get_vm_and_vmdk_attribs()
 
         def _create_vm_snapshot():
             # Create a snapshot of the VM
@@ -559,8 +560,8 @@ class VMWareVMOps(object):
                     elif prop.name == "config.files.vmPathName":
                         vm_config_pathname = prop.val
             if vm_config_pathname:
-                datastore_name, vmx_file_path = \
-                            vm_util.split_datastore_path(vm_config_pathname)
+                _ds_path = vm_util.split_datastore_path(vm_config_pathname)
+                datastore_name, vmx_file_path = _ds_path
             # Power off the VM if it is in PoweredOn state.
             if pwr_state == "poweredOn":
                 LOG.debug(_("Powering off the VM %s") % instance.name)
@@ -611,12 +612,12 @@ class VMWareVMOps(object):
             LOG.exception(exc)
 
     def pause(self, instance):
-        """Pause a VM instance."""
-        raise exception.ApiError("pause not supported for vmwareapi")
+        msg = _("pause not supported for vmwareapi")
+        raise NotImplementedError(msg)
 
     def unpause(self, instance):
-        """Un-Pause a VM instance."""
-        raise exception.ApiError("unpause not supported for vmwareapi")
+        msg = _("unpause not supported for vmwareapi")
+        raise NotImplementedError(msg)
 
     def suspend(self, instance):
         """Suspend the specified instance."""
@@ -662,11 +663,11 @@ class VMWareVMOps(object):
             reason = _("instance is not in a suspended state")
             raise exception.InstanceResumeFailure(reason=reason)
 
-    def get_info(self, instance_name):
+    def get_info(self, instance):
         """Return data about the VM instance."""
-        vm_ref = self._get_vm_ref_from_the_name(instance_name)
+        vm_ref = self._get_vm_ref_from_the_name(instance['name'])
         if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance_name)
+            raise exception.InstanceNotFound(instance_id=instance['name'])
 
         lst_properties = ["summary.config.numCpu",
                     "summary.config.memorySizeMB",
@@ -695,8 +696,8 @@ class VMWareVMOps(object):
 
     def get_diagnostics(self, instance):
         """Return data about VM diagnostics."""
-        raise exception.ApiError("get_diagnostics not implemented for "
-                                 "vmwareapi")
+        msg = _("get_diagnostics not implemented for vmwareapi")
+        raise NotImplementedError(msg)
 
     def get_console_output(self, instance):
         """Return snapshot of console."""
@@ -742,17 +743,16 @@ class VMWareVMOps(object):
             else:
                 dns = ''
 
-            interface_str = "%s;%s;%s;%s;%s;%s" % \
-                                            (info['mac'],
-                                             ip_v4 and ip_v4['ip'] or '',
-                                             ip_v4 and ip_v4['netmask'] or '',
-                                             info['gateway'],
-                                             info['broadcast'],
-                                             dns)
+            interface_str = ";".join([info['mac'],
+                                      ip_v4 and ip_v4['ip'] or '',
+                                      ip_v4 and ip_v4['netmask'] or '',
+                                      info['gateway'],
+                                      info['broadcast'],
+                                      dns])
             machine_id_str = machine_id_str + interface_str + '#'
 
-        machine_id_change_spec = \
-            vm_util.get_machine_id_change_spec(client_factory, machine_id_str)
+        machine_id_change_spec = vm_util.get_machine_id_change_spec(
+                                 client_factory, machine_id_str)
 
         LOG.debug(_("Reconfiguring VM instance %(name)s to set the machine id "
                   "with ip - %(ip_addr)s") %

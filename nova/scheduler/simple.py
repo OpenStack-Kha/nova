@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2010 Openstack, LLC.
+# Copyright (c) 2010 OpenStack, LLC.
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
@@ -46,7 +46,7 @@ simple_scheduler_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(simple_scheduler_opts)
+FLAGS.register_opts(simple_scheduler_opts)
 
 
 class SimpleScheduler(chance.ChanceScheduler):
@@ -82,8 +82,8 @@ class SimpleScheduler(chance.ChanceScheduler):
             if service['host'] in FLAGS.isolated_hosts and not in_isolation:
                 # images that aren't isolated only run on general hosts
                 continue
-            if check_cores and \
-                    instance_cores + instance_opts['vcpus'] > FLAGS.max_cores:
+            if (check_cores and
+                instance_cores + instance_opts['vcpus'] > FLAGS.max_cores):
                 msg = _("Not enough allocatable CPU cores remaining")
                 raise exception.NoValidHost(reason=msg)
             if utils.service_is_up(service) and not service['disabled']:
@@ -97,6 +97,7 @@ class SimpleScheduler(chance.ChanceScheduler):
         for num in xrange(num_instances):
             host = self._schedule_instance(context,
                     request_spec['instance_properties'], *_args, **_kwargs)
+            request_spec['instance_properties']['launch_index'] = num
             instance_ref = self.create_instance_db_entry(context,
                     request_spec)
             driver.cast_to_compute_host(context, host, 'run_instance',

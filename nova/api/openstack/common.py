@@ -29,12 +29,11 @@ from nova.compute import vm_states
 from nova.compute import task_states
 from nova import flags
 from nova import log as logging
-from nova import network
 from nova.network import model as network_model
 from nova import quota
 
 
-LOG = logging.getLogger('nova.api.openstack.common')
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 
 
@@ -66,6 +65,7 @@ _STATE_MAP = {
     },
     vm_states.RESIZING: {
         'default': 'RESIZE',
+        task_states.RESIZE_REVERTING: 'REVERT_RESIZE',
     },
     vm_states.PAUSED: {
         'default': 'PAUSED',
@@ -144,17 +144,16 @@ def _get_marker_param(request):
 
 
 def limited(items, request, max_limit=FLAGS.osapi_max_limit):
-    """
-    Return a slice of items according to requested offset and limit.
+    """Return a slice of items according to requested offset and limit.
 
-    @param items: A sliceable entity
-    @param request: `wsgi.Request` possibly containing 'offset' and 'limit'
+    :param items: A sliceable entity
+    :param request: ``wsgi.Request`` possibly containing 'offset' and 'limit'
                     GET variables. 'offset' is where to start in the list,
                     and 'limit' is the maximum number of items to return. If
                     'limit' is not specified, 0, or > max_limit, we default
                     to max_limit. Negative values for either offset or limit
                     will cause exc.HTTPBadRequest() exceptions to be raised.
-    @kwarg max_limit: The maximum number of items to return from 'items'
+    :kwarg max_limit: The maximum number of items to return from 'items'
     """
     try:
         offset = int(request.GET.get('offset', 0))
@@ -278,7 +277,7 @@ def check_img_metadata_quota_limit(context, metadata):
 
 
 def dict_to_query_str(params):
-    # TODO: we should just use urllib.urlencode instead of this
+    # TODO(throughnothing): we should just use urllib.urlencode instead of this
     # But currently we don't work with urlencoded url's
     param_str = ""
     for key, val in params.iteritems():
@@ -289,7 +288,7 @@ def dict_to_query_str(params):
 
 def get_networks_for_instance_from_nw_info(nw_info):
     networks = {}
-
+    LOG.debug(_('Converting nw_info: %s') % nw_info)
     for vif in nw_info:
         ips = vif.fixed_ips()
         floaters = vif.floating_ips()
@@ -299,44 +298,29 @@ def get_networks_for_instance_from_nw_info(nw_info):
 
         networks[label]['ips'].extend(ips)
         networks[label]['floating_ips'].extend(floaters)
+        LOG.debug(_('Converted networks: %s') % networks)
     return networks
 
 
-def get_networks_for_instance_from_cache(instance):
-    if (not instance.get('info_cache') or
-        not instance['info_cache'].get('network_info')):
-        # NOTE(jkoelker) Raising ValueError so that we trigger the
-        #                fallback lookup
-        raise ValueError
-
-    cached_info = instance['info_cache']['network_info']
-    nw_info = network_model.NetworkInfo.hydrate(cached_info)
-    return get_networks_for_instance_from_nw_info(nw_info)
+def get_nw_info_for_instance(context, instance):
+    info_cache = instance['info_cache'] or {}
+    cached_nwinfo = info_cache.get('network_info') or []
+    return network_model.NetworkInfo.hydrate(cached_nwinfo)
 
 
 def get_networks_for_instance(context, instance):
-    """Returns a prepared nw_info list for passing into the view
-    builders
+    """Returns a prepared nw_info list for passing into the view builders
 
-    We end up with a data structure like:
-    {'public': {'ips': [{'addr': '10.0.0.1', 'version': 4},
-                        {'addr': '2001::1', 'version': 6}],
-                'floating_ips': [{'addr': '172.16.0.1', 'version': 4},
-                                 {'addr': '172.16.2.1', 'version': 4}]},
-     ...}
+    We end up with a data structure like::
+
+        {'public': {'ips': [{'addr': '10.0.0.1', 'version': 4},
+                            {'addr': '2001::1', 'version': 6}],
+                    'floating_ips': [{'addr': '172.16.0.1', 'version': 4},
+                                     {'addr': '172.16.2.1', 'version': 4}]},
+         ...}
     """
-
-    try:
-        return get_networks_for_instance_from_cache(instance)
-    except (ValueError, KeyError, AttributeError):
-        # NOTE(jkoelker) If the json load (ValueError) or the
-        #                sqlalchemy FK (KeyError, AttributeError)
-        #                fail fall back to calling out the the
-        #                network api
-        network_api = network.API()
-
-        nw_info = network_api.get_instance_nw_info(context, instance)
-        return get_networks_for_instance_from_nw_info(nw_info)
+    nw_info = get_nw_info_for_instance(context, instance)
+    return get_networks_for_instance_from_nw_info(nw_info)
 
 
 def raise_http_conflict_for_instance_invalid_state(exc, action):
@@ -504,5 +488,5 @@ class ViewBuilder(object):
             return orig_url
         url_parts = list(urlparse.urlsplit(orig_url))
         prefix_parts = list(urlparse.urlsplit(prefix))
-        url_parts[1] = prefix_parts[1]
+        url_parts[0:2] = prefix_parts[0:2]
         return urlparse.urlunsplit(url_parts)

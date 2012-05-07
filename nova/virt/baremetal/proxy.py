@@ -54,13 +54,13 @@ from nova.virt.libvirt import utils as libvirt_utils
 
 Template = None
 
-LOG = logging.getLogger('nova.virt.baremetal.proxy')
+LOG = logging.getLogger(__name__)
 
 FLAGS = flags.FLAGS
 
-global_opts = [
+baremetal_opts = [
     cfg.StrOpt('baremetal_injected_network_template',
-                default=utils.abspath('virt/interfaces.template'),
+                default='$pybasedir/nova/virt/interfaces.template',
                 help='Template file for injected network'),
     cfg.StrOpt('baremetal_type',
                 default='baremetal',
@@ -73,7 +73,7 @@ global_opts = [
                  help='Whether to allow in project network traffic')
     ]
 
-FLAGS.add_options(global_opts)
+FLAGS.register_opts(baremetal_opts)
 
 
 def get_connection(read_only):
@@ -124,8 +124,8 @@ class ProxyConnection(driver.ComputeDriver):
 
     def _map_to_instance_info(self, domain_name):
         """Gets info from a virsh domain object into an InstanceInfo"""
-        (state, _max_mem, _mem, _num_cpu, _cpu_time) \
-            = self._conn.get_domain_info(domain_name)
+        _domain_info = self._conn.get_domain_info(domain_name)
+        state, _max_mem, _mem, _num_cpu, _cpu_time = _domain_info
         name = domain_name
         return driver.InstanceInfo(name, state)
 
@@ -188,7 +188,7 @@ class ProxyConnection(driver.ComputeDriver):
                 if state == power_state.RUNNING:
                     LOG.debug(_('instance %s: rebooted'), instance['name'])
                     timer.stop()
-            except:
+            except Exception:
                 LOG.exception(_('_wait_for_reboot failed'))
                 timer.stop()
         timer.f = _wait_for_reboot
@@ -221,7 +221,7 @@ class ProxyConnection(driver.ComputeDriver):
                 if state == power_state.RUNNING:
                     LOG.debug(_('instance %s: rescued'), instance['name'])
                     timer.stop()
-            except:
+            except Exception:
                 LOG.exception(_('_wait_for_rescue failed'))
                 timer.stop()
         timer.f = _wait_for_reboot
@@ -253,7 +253,7 @@ class ProxyConnection(driver.ComputeDriver):
             network_info=network_info,
             block_device_info=block_device_info)
         LOG.debug(_("instance %s: is building"), instance['name'])
-        LOG.debug(_(xml_dict))
+        LOG.debug(xml_dict)
 
         def _wait_for_boot():
             try:
@@ -334,11 +334,6 @@ class ProxyConnection(driver.ComputeDriver):
                 libvirt_utils.create_cow_image(base, target)
             else:
                 libvirt_utils.copy_image(base, target)
-
-    def _fetch_image(self, context, target, image_id, user_id, project_id,
-                     size=None):
-        """Grab image and optionally attempt to resize it"""
-        images.fetch_to_raw(context, image_id, target, user_id, project_id)
 
     def _create_image(self, context, inst, xml, suffix='',
                       disk_images=None, network_info=None,
@@ -476,8 +471,8 @@ class ProxyConnection(driver.ComputeDriver):
             for injection in ('metadata', 'key', 'net'):
                 if locals()[injection]:
                     LOG.info(_('instance %(inst_name)s: injecting '
-                               '%(injection)s into image %(img_id)s'
-                               % locals()))
+                               '%(injection)s into image %(img_id)s')
+                             % locals())
             try:
                 disk.inject_data(injection_path, key, net, metadata,
                                  partition=target_partition,
@@ -536,7 +531,7 @@ class ProxyConnection(driver.ComputeDriver):
         LOG.debug(_('instance %s: finished toXML method'), instance['name'])
         return xml_info
 
-    def get_info(self, instance_name):
+    def get_info(self, instance):
         """Retrieve information from baremetal for a specific instance name.
 
         If a baremetal error is encountered during lookup, we might raise a
@@ -544,8 +539,8 @@ class ProxyConnection(driver.ComputeDriver):
         baremetal error is.
 
         """
-        (state, max_mem, mem, num_cpu, cpu_time) \
-                = self._conn.get_domain_info(instance_name)
+        _domain_info = self._conn.get_domain_info(instance['name'])
+        state, max_mem, mem, num_cpu, cpu_time = _domain_info
         return {'state': state,
                 'max_mem': max_mem,
                 'mem': mem,
@@ -556,8 +551,8 @@ class ProxyConnection(driver.ComputeDriver):
         raise NotImplementedError()
 
     def get_diagnostics(self, instance_name):
-        raise exception.ApiError(_("diagnostics are not supported "
-                                   "for baremetal"))
+        # diagnostics are not supported for baremetal
+        raise NotImplementedError()
 
     def get_disks(self, instance_name):
         raise NotImplementedError()
@@ -792,8 +787,8 @@ class HostState(object):
         data["disk_used"] = connection.get_local_gb_used()
         data["disk_available"] = data["disk_total"] - data["disk_used"]
         data["host_memory_total"] = connection.get_memory_mb_total()
-        data["host_memory_free"] = data["host_memory_total"] - \
-            connection.get_memory_mb_used()
+        data["host_memory_free"] = (data["host_memory_total"] -
+                                    connection.get_memory_mb_used())
         data["hypervisor_type"] = connection.get_hypervisor_type()
         data["hypervisor_version"] = connection.get_hypervisor_version()
         self._stats = data

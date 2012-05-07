@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2010 Openstack, LLC.
+# Copyright (c) 2010 OpenStack, LLC.
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
 #
@@ -16,9 +16,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-Tests For Console proxy.
-"""
+"""Tests For Console proxy."""
 
 from nova import context
 from nova import db

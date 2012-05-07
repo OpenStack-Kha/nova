@@ -19,15 +19,14 @@ from nova.api.openstack import common
 from nova.api.openstack.compute.views import images as views_images
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
-from nova import compute
 from nova import exception
 from nova import flags
 import nova.image
-from nova import log
+from nova import log as logging
 import nova.utils
 
 
-LOG = log.getLogger('nova.api.openstack.compute.images')
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 
 SUPPORTED_FILTERS = {
@@ -94,17 +93,15 @@ class Controller(wsgi.Controller):
 
     _view_builder_class = views_images.ViewBuilder
 
-    def __init__(self, image_service=None, compute_service=None, **kwargs):
+    def __init__(self, image_service=None, **kwargs):
         """Initialize new `ImageController`.
 
-        :param compute_service: `nova.compute.api:API`
         :param image_service: `nova.image.glance:GlancemageService`
 
         """
         super(Controller, self).__init__(**kwargs)
-        self._compute_service = compute_service or compute.API()
-        self._image_service = image_service or \
-                nova.image.get_default_image_service()
+        self._image_service = (image_service or
+                               nova.image.get_default_image_service())
 
     def _get_filters(self, req):
         """
@@ -126,6 +123,11 @@ class Controller(wsgi.Controller):
             filters[filter_name] = filters[filter_name].rsplit('/', 1)[1]
         except (AttributeError, IndexError, KeyError):
             pass
+
+        filter_name = 'status'
+        if filter_name in filters:
+            # The Image API expects us to use lowercase strings for status
+            filters[filter_name] = filters[filter_name].lower()
 
         return filters
 
@@ -174,8 +176,11 @@ class Controller(wsgi.Controller):
         for key, val in page_params.iteritems():
             params[key] = val
 
-        images = self._image_service.index(context, filters=filters,
-                                           **page_params)
+        try:
+            images = self._image_service.index(context, filters=filters,
+                                               **page_params)
+        except exception.Invalid as e:
+            raise webob.exc.HTTPBadRequest(explanation=str(e))
         return self._view_builder.index(req, images)
 
     @wsgi.serializers(xml=ImagesTemplate)
@@ -191,8 +196,11 @@ class Controller(wsgi.Controller):
         page_params = common.get_pagination_params(req)
         for key, val in page_params.iteritems():
             params[key] = val
-        images = self._image_service.detail(context, filters=filters,
-                                            **page_params)
+        try:
+            images = self._image_service.detail(context, filters=filters,
+                                                **page_params)
+        except exception.Invalid as e:
+            raise webob.exc.HTTPBadRequest(explanation=str(e))
 
         return self._view_builder.detail(req, images)
 

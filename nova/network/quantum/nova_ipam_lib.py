@@ -25,7 +25,7 @@ from nova import log as logging
 from nova.network import manager
 
 
-LOG = logging.getLogger("nova.network.quantum.nova_ipam_lib")
+LOG = logging.getLogger(__name__)
 
 FLAGS = flags.FLAGS
 
@@ -80,15 +80,6 @@ class QuantumNovaIPAMLib(object):
                "uuid": quantum_net_id}
         db.network_update(admin_context, network['id'], net)
 
-    def get_network_id_by_cidr(self, context, cidr, project_id):
-        """ Grabs Quantum network UUID based on IPv4 CIDR. """
-        admin_context = context.elevated()
-        network = db.network_get_by_cidr(admin_context, cidr)
-        if not network:
-            raise Exception(_("No network with fixed_range = %s" %
-                              cidr))
-        return network['uuid']
-
     def delete_subnets_by_net_id(self, context, net_id, project_id):
         """Deletes a network based on Quantum UUID.  Uses FlatManager
            delete_network to avoid duplication.
@@ -96,7 +87,7 @@ class QuantumNovaIPAMLib(object):
         admin_context = context.elevated()
         network = db.network_get_by_uuid(admin_context, net_id)
         if not network:
-            raise Exception(_("No network with net_id = %s" % net_id))
+            raise Exception(_("No network with net_id = %s") % net_id)
         manager.FlatManager.delete_network(self.net_manager,
                                            admin_context, None,
                                            network['uuid'],
@@ -227,8 +218,8 @@ class QuantumNovaIPAMLib(object):
                                {'allocated': False,
                                 'virtual_interface_id': None})
         if len(fixed_ips) == 0:
-            LOG.error(_('No fixed IPs to deallocate for vif %s' %
-                        vif_ref['id']))
+            LOG.error(_('No fixed IPs to deallocate for vif %s') %
+                      vif_ref['id'])
 
     def get_allocated_ips(self, context, subnet_id, project_id):
         """Returns a list of (ip, vif_id) pairs"""

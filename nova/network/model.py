@@ -21,6 +21,11 @@ import netaddr
 from nova import exception
 
 
+def ensure_string_keys(d):
+    # http://bugs.python.org/issue4978
+    return dict([(str(k), v) for k, v in d.iteritems()])
+
+
 class Model(dict):
     """Defines some necessary structures for most of the network models"""
     def __repr__(self):
@@ -56,15 +61,15 @@ class IP(Model):
 
     def is_in_subnet(self, subnet):
         if self['address'] and subnet['cidr']:
-            return netaddr.IPAddress(self['address']) in \
-                   netaddr.IPNetwork(subnet['cidr'])
+            return (netaddr.IPAddress(self['address']) in
+                    netaddr.IPNetwork(subnet['cidr']))
         else:
             return False
 
     @classmethod
     def hydrate(cls, ip):
         if ip:
-            return IP(**ip)
+            return IP(**ensure_string_keys(ip))
         return None
 
 
@@ -86,7 +91,7 @@ class FixedIP(IP):
 
     @classmethod
     def hydrate(cls, fixed_ip):
-        fixed_ip = FixedIP(**fixed_ip)
+        fixed_ip = FixedIP(**ensure_string_keys(fixed_ip))
         fixed_ip['floating_ips'] = [IP.hydrate(floating_ip)
                                    for floating_ip in fixed_ip['floating_ips']]
         return fixed_ip
@@ -105,7 +110,7 @@ class Route(Model):
 
     @classmethod
     def hydrate(cls, route):
-        route = Route(**route)
+        route = Route(**ensure_string_keys(route))
         route['gateway'] = IP.hydrate(route['gateway'])
         return route
 
@@ -149,7 +154,7 @@ class Subnet(Model):
 
     @classmethod
     def hydrate(cls, subnet):
-        subnet = Subnet(**subnet)
+        subnet = Subnet(**ensure_string_keys(subnet))
         subnet['dns'] = [IP.hydrate(dns) for dns in subnet['dns']]
         subnet['ips'] = [FixedIP.hydrate(ip) for ip in subnet['ips']]
         subnet['routes'] = [Route.hydrate(route) for route in subnet['routes']]
@@ -177,7 +182,7 @@ class Network(Model):
     @classmethod
     def hydrate(cls, network):
         if network:
-            network = Network(**network)
+            network = Network(**ensure_string_keys(network))
             network['subnets'] = [Subnet.hydrate(subnet)
                                   for subnet in network['subnets']]
         return network
@@ -206,24 +211,28 @@ class VIF(Model):
                             for floating_ip in fixed_ip['floating_ips']]
 
     def labeled_ips(self):
-        """ returns the list of all IPs in this flat structure:
-        {'network_label': 'my_network',
-         'network_id': 'n8v29837fn234782f08fjxk3ofhb84',
-         'ips': [{'address': '123.123.123.123',
-                  'version': 4,
-                  'type: 'fixed',
-                  'meta': {...}},
-                 {'address': '124.124.124.124',
-                  'version': 4,
-                  'type': 'floating',
-                  'meta': {...}},
-                 {'address': 'fe80::4',
-                  'version': 6,
-                  'type': 'fixed',
-                  'meta': {...}}]"""
+        """Returns the list of all IPs
+
+        The return value looks like this flat structure::
+
+            {'network_label': 'my_network',
+             'network_id': 'n8v29837fn234782f08fjxk3ofhb84',
+             'ips': [{'address': '123.123.123.123',
+                      'version': 4,
+                      'type: 'fixed',
+                      'meta': {...}},
+                     {'address': '124.124.124.124',
+                      'version': 4,
+                      'type': 'floating',
+                      'meta': {...}},
+                     {'address': 'fe80::4',
+                      'version': 6,
+                      'type': 'fixed',
+                      'meta': {...}}]
+        """
         if self['network']:
             # remove unecessary fields on fixed_ips
-            ips = [IP(**ip) for ip in self.fixed_ips()]
+            ips = [IP(**ensure_string_keys(ip)) for ip in self.fixed_ips()]
             for ip in ips:
                 # remove floating ips from IP, since this is a flat structure
                 # of all IPs
@@ -237,7 +246,7 @@ class VIF(Model):
 
     @classmethod
     def hydrate(cls, vif):
-        vif = VIF(**vif)
+        vif = VIF(**ensure_string_keys(vif))
         vif['network'] = Network.hydrate(vif['network'])
         return vif
 

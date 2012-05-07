@@ -28,7 +28,7 @@ from nova import volume
 from nova.volume import volume_types
 
 
-LOG = logging.getLogger("nova.api.openstack.volume.volumes")
+LOG = logging.getLogger(__name__)
 
 
 FLAGS = flags.FLAGS
@@ -48,14 +48,15 @@ def _translate_attachment_summary_view(_context, vol):
     """Maps keys for attachment summary view."""
     d = {}
 
-    volume_id = vol['id']
+    # TODO(bcwaldon): remove str cast once we use uuids
+    volume_id = str(vol['id'])
 
     # NOTE(justinsb): We use the volume id as the id of the attachment object
     d['id'] = volume_id
 
-    d['volumeId'] = volume_id
+    d['volume_id'] = volume_id
     if vol.get('instance'):
-        d['serverId'] = vol['instance']['uuid']
+        d['server_id'] = vol['instance']['uuid']
     if vol.get('mountpoint'):
         d['device'] = vol['mountpoint']
 
@@ -76,26 +77,32 @@ def _translate_volume_summary_view(context, vol):
     """Maps keys for volumes summary view."""
     d = {}
 
-    d['id'] = vol['id']
+    # TODO(bcwaldon): remove str cast once we use uuids
+    d['id'] = str(vol['id'])
     d['status'] = vol['status']
     d['size'] = vol['size']
-    d['availabilityZone'] = vol['availability_zone']
-    d['createdAt'] = vol['created_at']
+    d['availability_zone'] = vol['availability_zone']
+    d['created_at'] = vol['created_at']
 
+    d['attachments'] = []
     if vol['attach_status'] == 'attached':
-        d['attachments'] = [_translate_attachment_detail_view(context, vol)]
-    else:
-        d['attachments'] = [{}]
+        attachment = _translate_attachment_detail_view(context, vol)
+        d['attachments'].append(attachment)
 
-    d['displayName'] = vol['display_name']
-    d['displayDescription'] = vol['display_description']
+    d['display_name'] = vol['display_name']
+    d['display_description'] = vol['display_description']
 
     if vol['volume_type_id'] and vol.get('volume_type'):
-        d['volumeType'] = vol['volume_type']['name']
+        d['volume_type'] = vol['volume_type']['name']
     else:
-        d['volumeType'] = vol['volume_type_id']
+        # TODO(bcwaldon): remove str cast once we use uuids
+        d['volume_type'] = str(vol['volume_type_id'])
 
-    d['snapshotId'] = vol['snapshot_id']
+    d['snapshot_id'] = vol['snapshot_id']
+    # TODO(bcwaldon): remove str cast once we use uuids
+    if d['snapshot_id'] is not None:
+        d['snapshot_id'] = str(d['snapshot_id'])
+
     LOG.audit(_("vol=%s"), vol, context=context)
 
     if vol.get('volume_metadata'):
@@ -111,8 +118,8 @@ def _translate_volume_summary_view(context, vol):
 
 def make_attachment(elem):
     elem.set('id')
-    elem.set('serverId')
-    elem.set('volumeId')
+    elem.set('server_id')
+    elem.set('volume_id')
     elem.set('device')
 
 
@@ -120,12 +127,12 @@ def make_volume(elem):
     elem.set('id')
     elem.set('status')
     elem.set('size')
-    elem.set('availabilityZone')
-    elem.set('createdAt')
-    elem.set('displayName')
-    elem.set('displayDescription')
-    elem.set('volumeType')
-    elem.set('snapshotId')
+    elem.set('availability_zone')
+    elem.set('created_at')
+    elem.set('display_name')
+    elem.set('display_description')
+    elem.set('volume_type')
+    elem.set('snapshot_id')
 
     attachments = xmlutil.SubTemplateElement(elem, 'attachments')
     attachment = xmlutil.SubTemplateElement(attachments, 'attachment',

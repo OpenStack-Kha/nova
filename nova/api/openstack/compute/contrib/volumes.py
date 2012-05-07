@@ -31,7 +31,7 @@ from nova import volume
 from nova.volume import volume_types
 
 
-LOG = logging.getLogger("nova.api.openstack.compute.contrib.volumes")
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 authorize = extensions.extension_authorizer('compute', 'volumes')
 
@@ -275,7 +275,7 @@ class VolumeAttachmentsTemplate(xmlutil.TemplateBuilder):
 
 
 class VolumeAttachmentController(object):
-    """The volume attachment API controller for the Openstack API.
+    """The volume attachment API controller for the OpenStack API.
 
     A child resource of the server.  Note that we use the volume id
     as the ID of the attachment (though this is not guaranteed externally)
@@ -397,7 +397,7 @@ class VolumeAttachmentController(object):
 
 
 class BootFromVolumeController(servers.Controller):
-    """The boot from volume API controller for the Openstack API."""
+    """The boot from volume API controller for the OpenStack API."""
 
     def _get_block_device_mapping(self, data):
         return data.get('block_device_mapping')
@@ -481,7 +481,8 @@ class SnapshotController(object):
         LOG.audit(_("Delete snapshot with id: %s"), id, context=context)
 
         try:
-            self.volume_api.delete_snapshot(context, snapshot_id=id)
+            snapshot = self.volume_api.get_snapshot(context, id)
+            self.volume_api.delete_snapshot(context, snapshot)
         except exception.NotFound:
             return exc.HTTPNotFound()
         return webob.Response(status_int=202)

@@ -22,7 +22,15 @@ Driver base-classes:
     types that support that contract
 """
 
+from nova import context as nova_context
+from nova import db
+from nova import flags
+from nova import log as logging
 from nova.compute import power_state
+
+
+LOG = logging.getLogger(__name__)
+FLAGS = flags.FLAGS
 
 
 class InstanceInfo(object):
@@ -100,7 +108,7 @@ class ComputeDriver(object):
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
-    def get_info(self, instance_name):
+    def get_info(self, instance):
         """Get the current status of an instance, by name (not ID!)
 
         Returns a dict containing:
@@ -113,6 +121,38 @@ class ComputeDriver(object):
         """
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
+
+    def get_num_instances(self):
+        """Return the total number of virtual machines.
+
+        Return the number of virtual machines that the hypervisor knows
+        about.
+
+        .. note::
+
+            This implementation works for all drivers, but it is
+            not particularly efficient. Maintainers of the virt drivers are
+            encouraged to override this method with something more
+            efficient.
+        """
+        return len(self.list_instances())
+
+    def instance_exists(self, instance_id):
+        """Checks existence of an instance on the host.
+
+        :param instance_id: The ID / name of the instance to lookup
+
+        Returns True if an instance with the supplied ID exists on
+        the host, False otherwise.
+
+        .. note::
+
+            This implementation works for all drivers, but it is
+            not particularly efficient. Maintainers of the virt drivers are
+            encouraged to override this method with something more
+            efficient.
+        """
+        return instance_id in self.list_instances()
 
     def list_instances(self):
         """
@@ -235,7 +275,7 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def migrate_disk_and_power_off(self, context, instance, dest,
-                                   instance_type):
+                                   instance_type, network_info):
         """
         Transfers the disk of a running instance in multiple phases, turning
         off the instance before the end.
@@ -270,7 +310,7 @@ class ComputeDriver(object):
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
-    def finish_revert_migration(self, instance):
+    def finish_revert_migration(self, instance, network_info):
         """Finish reverting a resize, powering back on the instance"""
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
@@ -386,7 +426,7 @@ class ComputeDriver(object):
         host 'H0' and this method would still have been called.  The point was
         that this method isn't called on the host where instances of that
         group are running (as is the case with
-        :method:`refresh_security_group_rules`) but is called where references
+        :py:meth:`refresh_security_group_rules`) but is called where references
         are made to authorizing those instances.
 
         An error should be raised if the operation cannot complete.
@@ -400,7 +440,7 @@ class ComputeDriver(object):
 
         When this is called, rules have either been added or removed from the
         datastore.  You can retrieve rules with
-        :method:`nova.db.provider_fw_rule_get_all`.
+        :py:meth:`nova.db.provider_fw_rule_get_all`.
 
         Provider rules take precedence over security group rules.  If an IP
         would be allowed by a security group ingress rule, but blocked by
@@ -500,12 +540,17 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def poll_unconfirmed_resizes(self, resize_confirm_window):
-        """Poll for unconfirmed resizes"""
+        """Poll for unconfirmed resizes."""
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
     def host_power_action(self, host, action):
         """Reboots, shuts down or powers up the host."""
+        raise NotImplementedError()
+
+    def host_maintenance_mode(self, host, mode):
+        """Start/Stop host maintenance window. On start, it triggers
+        guest VMs evacuation."""
         raise NotImplementedError()
 
     def set_host_enabled(self, host, enabled):
@@ -618,15 +663,22 @@ class ComputeDriver(object):
         related to other calls into the driver. The prime example is to clean
         the cache and remove images which are no longer of interest.
         """
+
+    def add_to_aggregate(self, context, aggregate, host, **kwargs):
+        """Add a compute host to an aggregate."""
+        raise NotImplementedError()
+
+    def remove_from_aggregate(self, context, aggregate, host, **kwargs):
+        """Remove a compute host from an aggregate."""
         raise NotImplementedError()
 
     def get_volume_connector(self, instance):
-        """
-        Get connector information for the instance for attaching to volumes.
+        """Get connector information for the instance for attaching to volumes.
 
         Connector information is a dictionary representing the ip of the
         machine that will be making the connection and and the name of the
-        iscsi initiator as follows:
+        iscsi initiator as follows::
+
             {
                 'ip': ip,
                 'initiator': initiator,

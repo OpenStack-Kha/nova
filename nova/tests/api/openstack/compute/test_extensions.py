@@ -29,11 +29,10 @@ from nova.api.openstack import xmlutil
 from nova import flags
 from nova import test
 from nova.tests.api.openstack import fakes
-from nova import wsgi as base_wsgi
 
 FLAGS = flags.FLAGS
 
-NS = "{http://docs.openstack.org/compute/api/v1.1}"
+NS = "{http://docs.openstack.org/common/api/v1.0}"
 ATOMNS = "{http://www.w3.org/2005/Atom}"
 response_body = "Try to say this Mr. Knox, sir..."
 extension_body = "I am not a fox!"
@@ -162,6 +161,7 @@ class ExtensionControllerTest(ExtensionTestCase):
             "DeferredDelete",
             "DiskConfig",
             "ExtendedStatus",
+            "ExtendedServerAttributes",
             "FlavorExtraSpecs",
             "FlavorExtraData",
             "FlavorManage",
@@ -172,6 +172,7 @@ class ExtensionControllerTest(ExtensionTestCase):
             "Hosts",
             "Keypairs",
             "Multinic",
+            "Networks",
             "Quotas",
             "Rescue",
             "SchedulerHints",
@@ -181,12 +182,9 @@ class ExtensionControllerTest(ExtensionTestCase):
             "ServerStartStop",
             "SimpleTenantUsage",
             "Users",
-            "VSAs",
             "VirtualInterfaces",
             "Volumes",
             "VolumeTypes",
-            "Zones",
-            "Networks",
             ]
         self.ext_list.sort()
 
@@ -196,12 +194,11 @@ class ExtensionControllerTest(ExtensionTestCase):
         response = request.get_response(app)
         self.assertEqual(200, response.status_int)
 
-        # Make sure we have all the extensions.
+        # Make sure we have all the extensions, extra extensions being OK.
         data = json.loads(response.body)
-        names = [str(x['name']) for x in data['extensions']]
+        names = [str(x['name']) for x in data['extensions']
+                 if str(x['name']) in self.ext_list]
         names.sort()
-        print names
-        print self.ext_list
         self.assertEqual(names, self.ext_list)
 
         # Make sure that at least Fox in Sox is correct.
@@ -251,14 +248,13 @@ class ExtensionControllerTest(ExtensionTestCase):
         request.accept = "application/xml"
         response = request.get_response(app)
         self.assertEqual(200, response.status_int)
-        print response.body
 
         root = etree.XML(response.body)
         self.assertEqual(root.tag.split('extensions')[0], NS)
 
-        # Make sure we have all the extensions.
+        # Make sure we have all the extensions, extras extensions being OK.
         exts = root.findall('{0}extension'.format(NS))
-        self.assertEqual(len(exts), len(self.ext_list))
+        self.assert_(len(exts) >= len(self.ext_list))
 
         # Make sure that at least Fox in Sox is correct.
         (fox_ext, ) = [x for x in exts if x.get('alias') == 'FOXNSOX']
@@ -278,7 +274,6 @@ class ExtensionControllerTest(ExtensionTestCase):
         response = request.get_response(app)
         self.assertEqual(200, response.status_int)
         xml = response.body
-        print xml
 
         root = etree.XML(xml)
         self.assertEqual(root.tag.split('extension')[0], NS)
@@ -475,7 +470,6 @@ class RequestExtensionTest(ExtensionTestCase):
         response = request.get_response(app)
         self.assertEqual(200, response.status_int)
         response_data = json.loads(response.body)
-        print response_data
         self.assertEqual('newblue', response_data['flavor']['googoose'])
         self.assertEqual("Pig Bands!", response_data['big_bands'])
 
@@ -576,7 +570,6 @@ class ExtensionsXMLSerializerTest(test.TestCase):
                      'href': 'http://docs.rack.com/servers/api/ext/cs.wadl'}]}}
 
         xml = serializer.serialize(data)
-        print xml
         root = etree.XML(xml)
         ext_dict = data['extension']
         self.assertEqual(root.findtext('{0}description'.format(NS)),
@@ -621,7 +614,6 @@ class ExtensionsXMLSerializerTest(test.TestCase):
                              "href": "http://foo.com/api/ext/cs-cbs.wadl"}]}]}
 
         xml = serializer.serialize(data)
-        print xml
         root = etree.XML(xml)
         ext_elems = root.findall('{0}extension'.format(NS))
         self.assertEqual(len(ext_elems), 2)

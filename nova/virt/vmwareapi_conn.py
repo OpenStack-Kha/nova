@@ -47,10 +47,10 @@ from nova.virt import driver
 from nova.virt.vmwareapi import error_util
 from nova.virt.vmwareapi import vim
 from nova.virt.vmwareapi import vim_util
-from nova.virt.vmwareapi.vmops import VMWareVMOps
+from nova.virt.vmwareapi import vmops
 
 
-LOG = logging.getLogger("nova.virt.vmwareapi_conn")
+LOG = logging.getLogger(__name__)
 
 vmwareapi_opts = [
     cfg.StrOpt('vmwareapi_host_ip',
@@ -80,7 +80,7 @@ vmwareapi_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(vmwareapi_opts)
+FLAGS.register_opts(vmwareapi_opts)
 
 TIME_BETWEEN_API_CALL_RETRIES = 2.0
 
@@ -95,7 +95,7 @@ class Failure(Exception):
         return str(self.details)
 
 
-def get_connection(_):
+def get_connection(_read_only):
     """Sets up the ESX host connection."""
     host_ip = FLAGS.vmwareapi_host_ip
     host_username = FLAGS.vmwareapi_host_username
@@ -118,7 +118,7 @@ class VMWareESXConnection(driver.ComputeDriver):
         super(VMWareESXConnection, self).__init__()
         session = VMWareAPISession(host_ip, host_username, host_password,
                                    api_retry_count, scheme=scheme)
-        self._vmops = VMWareVMOps(session)
+        self._vmops = vmops.VMWareVMOps(session)
 
     def init_host(self, host):
         """Do the initialization that needs to be done."""
@@ -162,9 +162,9 @@ class VMWareESXConnection(driver.ComputeDriver):
         """Resume the suspended VM instance."""
         self._vmops.resume(instance)
 
-    def get_info(self, instance_name):
+    def get_info(self, instance):
         """Return info about the VM instance."""
-        return self._vmops.get_info(instance_name)
+        return self._vmops.get_info(instance)
 
     def get_diagnostics(self, instance):
         """Return data about VM diagnostics."""
@@ -203,11 +203,16 @@ class VMWareESXConnection(driver.ComputeDriver):
 
     def host_power_action(self, host, action):
         """Reboots, shuts down or powers up the host."""
-        pass
+        raise NotImplementedError()
+
+    def host_maintenance_mode(self, host, mode):
+        """Start/Stop host maintenance window. On start, it triggers
+        guest VMs evacuation."""
+        raise NotImplementedError()
 
     def set_host_enabled(self, host, enabled):
         """Sets the specified host's ability to accept new instances."""
-        pass
+        raise NotImplementedError()
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""

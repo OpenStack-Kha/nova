@@ -26,7 +26,7 @@ from nova import log as logging
 from nova import flags
 
 
-LOG = logging.getLogger('nova.api.openstack.compute.ips')
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 
 
@@ -59,7 +59,7 @@ class AddressesTemplate(xmlutil.TemplateBuilder):
 
 
 class Controller(wsgi.Controller):
-    """The servers addresses API controller for the Openstack API."""
+    """The servers addresses API controller for the OpenStack API."""
 
     _view_builder_class = view_addresses.ViewBuilder
 

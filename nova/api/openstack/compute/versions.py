@@ -24,6 +24,16 @@ from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 
 
+LINKS = {
+   'v2.0': {
+       'pdf': 'http://docs.openstack.org/'
+               'api/openstack-compute/1.1/os-compute-devguide-1.1.pdf',
+       'wadl': 'http://docs.openstack.org/'
+               'api/openstack-compute/1.1/wadl/os-compute-1.1.wadl',
+    },
+}
+
+
 VERSIONS = {
     "v2.0": {
         "id": "v2.0",
@@ -33,14 +43,12 @@ VERSIONS = {
             {
                 "rel": "describedby",
                 "type": "application/pdf",
-                "href": "http://docs.rackspacecloud.com/"
-                        "servers/api/v1.1/cs-devguide-20110125.pdf",
+                "href": LINKS['v2.0']['pdf'],
             },
             {
                 "rel": "describedby",
                 "type": "application/vnd.sun.wadl+xml",
-                "href": "http://docs.rackspacecloud.com/"
-                        "servers/api/v1.1/application.wadl",
+                "href": LINKS['v2.0']['wadl'],
             },
         ],
         "media-types": [
@@ -77,7 +85,7 @@ def make_version(elem):
     xmlutil.make_links(elem, 'links')
 
 
-version_nsmap = {None: xmlutil.XMLNS_V11, 'atom': xmlutil.XMLNS_ATOM}
+version_nsmap = {None: xmlutil.XMLNS_COMMON_V10, 'atom': xmlutil.XMLNS_ATOM}
 
 
 class VersionTemplate(xmlutil.TemplateBuilder):

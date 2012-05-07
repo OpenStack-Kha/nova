@@ -16,40 +16,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import gettext
 import glob
 import os
 
-from setuptools import find_packages
-
-# In order to run the i18n commands for compiling and
-# installing message catalogs, we use DistUtilsExtra.
-# Don't make this a hard requirement, but warn that
-# i18n commands won't be available if DistUtilsExtra is
-# not installed...
-try:
-    from DistUtilsExtra.auto import setup
-except ImportError:
-    from setuptools import setup
-    print "Warning: DistUtilsExtra required to use i18n builders. "
-    print "To build nova with support for message catalogs, you need "
-    print "  https://launchpad.net/python-distutils-extra >= 2.18"
-
-gettext.install('nova', unicode=1)
+import setuptools
 
 from nova import version
 
 nova_cmdclass = {}
 
 try:
-    from sphinx.setup_command import BuildDoc
+    from sphinx import setup_command
 
-    class local_BuildDoc(BuildDoc):
+    class local_BuildDoc(setup_command.BuildDoc):
         def run(self):
             for builder in ['html', 'man']:
                 self.builder = builder
                 self.finalize_options()
-                BuildDoc.run(self)
+                setup_command.BuildDoc.run(self)
     nova_cmdclass['build_sphinx'] = local_BuildDoc
 
 except Exception:
@@ -69,17 +53,16 @@ def find_data_files(destdir, srcdir):
     return package_data
 
 
-setup(name='nova',
+setuptools.setup(name='nova',
       version=version.canonical_version_string(),
       description='cloud computing fabric controller',
       author='OpenStack',
       author_email='nova@lists.launchpad.net',
       url='http://www.openstack.org/',
       cmdclass=nova_cmdclass,
-      packages=find_packages(exclude=['bin', 'smoketests']),
+      packages=setuptools.find_packages(exclude=['bin', 'smoketests']),
       include_package_data=True,
       test_suite='nose.collector',
-      data_files=find_data_files('share/nova', 'tools'),
       scripts=['bin/clear_rabbit_queues',
                'bin/instance-usage-audit',
                'bin/nova-all',
@@ -94,15 +77,12 @@ setup(name='nova',
                'bin/nova-consoleauth',
                'bin/nova-dhcpbridge',
                'bin/nova-direct-api',
-               'bin/nova-logspool',
                'bin/nova-manage',
                'bin/nova-network',
                'bin/nova-objectstore',
                'bin/nova-rootwrap',
                'bin/nova-scheduler',
-               'bin/nova-spoolsentry',
                'bin/nova-volume',
-               'bin/nova-vsa',
                'bin/nova-xvpvncproxy',
                'bin/stack',
                'tools/nova-debug'],

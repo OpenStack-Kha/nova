@@ -25,7 +25,7 @@ from nova import flags
 from nova import log as logging
 from nova import utils
 
-LOG = logging.getLogger('nova.virt.libvirt.volume')
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 flags.DECLARE('num_iscsi_scan_tries', 'nova.volume.driver')
 
@@ -44,7 +44,7 @@ class LibvirtVolumeDriver(object):
         driver = self._pick_volume_driver()
         device_path = connection_info['data']['device_path']
         xml = """<disk type='block'>
-                     <driver name='%s' type='raw'/>
+                     <driver name='%s' type='raw' cache='none'/>
                      <source dev='%s'/>
                      <target dev='%s' bus='virtio'/>
                  </disk>""" % (driver, device_path, mount_device)
@@ -62,7 +62,7 @@ class LibvirtFakeVolumeDriver(LibvirtVolumeDriver):
         protocol = 'fake'
         name = 'fake'
         xml = """<disk type='network'>
-                     <driver name='qemu' type='raw'/>
+                     <driver name='qemu' type='raw' cache='none'/>
                      <source protocol='%s' name='%s'/>
                      <target dev='%s' bus='virtio'/>
                  </disk>""" % (protocol, name, mount_device)
@@ -76,11 +76,25 @@ class LibvirtNetVolumeDriver(LibvirtVolumeDriver):
         driver = self._pick_volume_driver()
         protocol = connection_info['driver_volume_type']
         name = connection_info['data']['name']
-        xml = """<disk type='network'>
-                     <driver name='%s' type='raw'/>
-                     <source protocol='%s' name='%s'/>
-                     <target dev='%s' bus='virtio'/>
-                 </disk>""" % (driver, protocol, name, mount_device)
+        if connection_info['data'].get('auth_enabled'):
+            username = connection_info['data']['auth_username']
+            secret_type = connection_info['data']['secret_type']
+            secret_uuid = connection_info['data']['secret_uuid']
+            xml = """<disk type='network'>
+                         <driver name='%s' type='raw' cache='none'/>
+                         <source protocol='%s' name='%s'/>
+                         <auth username='%s'>
+                             <secret type='%s' uuid='%s'/>
+                         </auth>
+                         <target dev='%s' bus='virtio'/>
+                     </disk>""" % (driver, protocol, name, username,
+                                   secret_type, secret_uuid, mount_device)
+        else:
+            xml = """<disk type='network'>
+                         <driver name='%s' type='raw' cache='none'/>
+                         <source protocol='%s' name='%s'/>
+                         <target dev='%s' bus='virtio'/>
+                     </disk>""" % (driver, protocol, name, mount_device)
         return xml
 
 
@@ -103,18 +117,21 @@ class LibvirtISCSIVolumeDriver(LibvirtVolumeDriver):
                          '-v', property_value)
         return self._run_iscsiadm(iscsi_properties, iscsi_command)
 
+    @utils.synchronized('connect_volume')
     def connect_volume(self, connection_info, mount_device):
         """Attach the volume to instance_name"""
         iscsi_properties = connection_info['data']
-        # NOTE(vish): if we are on the same host as nova volume, the
+        # NOTE(vish): If we are on the same host as nova volume, the
         #             discovery makes the target so we don't need to
         #             run --op new. Therefore, we check to see if the
         #             target exists, and if we get 255 (Not Found), then
-        #             we run --op new
+        #             we run --op new. This will also happen if another
+        #             volume is using the same target.
         try:
             self._run_iscsiadm(iscsi_properties, ())
         except exception.ProcessExecutionError as exc:
-            if exc.exit_code == 255:
+            # iscsiadm returns 21 for "No records found" after version 2.0-871
+            if exc.exit_code in [21, 255]:
                 self._run_iscsiadm(iscsi_properties, ('--op', 'new'))
             else:
                 raise
@@ -130,18 +147,17 @@ class LibvirtISCSIVolumeDriver(LibvirtVolumeDriver):
                                   "node.session.auth.password",
                                   iscsi_properties['auth_password'])
 
-        self._run_iscsiadm(iscsi_properties, ("--login",))
+        # NOTE(vish): If we have another lun on the same target, we may
+        #             have a duplicate login
+        self._run_iscsiadm(iscsi_properties, ("--login",),
+                           check_exit_code=[0, 255])
 
         self._iscsiadm_update(iscsi_properties, "node.startup", "automatic")
 
-        if FLAGS.iscsi_helper == 'tgtadm':
-            host_device = ("/dev/disk/by-path/ip-%s-iscsi-%s-lun-1" %
-                            (iscsi_properties['target_portal'],
-                             iscsi_properties['target_iqn']))
-        else:
-            host_device = ("/dev/disk/by-path/ip-%s-iscsi-%s-lun-0" %
-                            (iscsi_properties['target_portal'],
-                             iscsi_properties['target_iqn']))
+        host_device = ("/dev/disk/by-path/ip-%s-iscsi-%s-lun-%s" %
+                        (iscsi_properties['target_portal'],
+                         iscsi_properties['target_iqn'],
+                         iscsi_properties.get('target_lun', 0)))
 
         # The /dev/disk/by-path/... node is not always present immediately
         # TODO(justinsb): This retry-with-delay is a pattern, move to utils?
@@ -171,13 +187,22 @@ class LibvirtISCSIVolumeDriver(LibvirtVolumeDriver):
         sup = super(LibvirtISCSIVolumeDriver, self)
         return sup.connect_volume(connection_info, mount_device)
 
+    @utils.synchronized('connect_volume')
     def disconnect_volume(self, connection_info, mount_device):
         """Detach the volume from instance_name"""
         sup = super(LibvirtISCSIVolumeDriver, self)
         sup.disconnect_volume(connection_info, mount_device)
         iscsi_properties = connection_info['data']
-        self._iscsiadm_update(iscsi_properties, "node.startup", "manual")
-        self._run_iscsiadm(iscsi_properties, ("--logout",),
-                           check_exit_code=[0, 255])
-        self._run_iscsiadm(iscsi_properties, ('--op', 'delete'),
-                           check_exit_code=[0, 255])
+        # NOTE(vish): Only disconnect from the target if no luns from the
+        #             target are in use.
+        device_prefix = ("/dev/disk/by-path/ip-%s-iscsi-%s-lun-" %
+                         (iscsi_properties['target_portal'],
+                          iscsi_properties['target_iqn']))
+        devices = self.connection.get_all_block_devices()
+        devices = [dev for dev in devices if dev.startswith(device_prefix)]
+        if not devices:
+            self._iscsiadm_update(iscsi_properties, "node.startup", "manual")
+            self._run_iscsiadm(iscsi_properties, ("--logout",),
+                               check_exit_code=[0, 255])
+            self._run_iscsiadm(iscsi_properties, ('--op', 'delete'),
+                               check_exit_code=[0, 255])

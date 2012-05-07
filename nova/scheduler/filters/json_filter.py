@@ -1,4 +1,4 @@
-# Copyright (c) 2011 Openstack, LLC.
+# Copyright (c) 2011 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -17,10 +17,10 @@
 import json
 import operator
 
-from nova.scheduler.filters import abstract_filter
+from nova.scheduler import filters
 
 
-class JsonFilter(abstract_filter.AbstractHostFilter):
+class JsonFilter(filters.BaseHostFilter):
     """Host Filter to allow simple JSON-based grammar for
     selecting hosts.
     """

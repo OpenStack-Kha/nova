@@ -22,8 +22,8 @@ from nova.api.openstack import wsgi
 
 
 VERSIONS = {
-    "v1": {
-        "id": "v1",
+    "v1.0": {
+        "id": "v1.0",
         "status": "CURRENT",
         "updated": "2012-01-04T11:33:21Z",
         "links": [
@@ -56,15 +56,19 @@ VERSIONS = {
 
 
 class Versions(versions.Versions):
-    def dispatch(self, request, *args):
-        """Respond to a request for all OpenStack API versions."""
-        builder = views_versions.get_view_builder(request)
-        if request.path == '/':
-            # List Versions
-            return builder.build_versions(VERSIONS)
-        else:
-            # Versions Multiple Choice
-            return builder.build_choices(VERSIONS, request)
+    @wsgi.serializers(xml=versions.VersionsTemplate,
+                      atom=versions.VersionsAtomSerializer)
+    def index(self, req):
+        """Return all versions."""
+        builder = views_versions.get_view_builder(req)
+        return builder.build_versions(VERSIONS)
+
+    @wsgi.serializers(xml=versions.ChoicesTemplate)
+    @wsgi.response(300)
+    def multi(self, req):
+        """Return multiple choices."""
+        builder = views_versions.get_view_builder(req)
+        return builder.build_choices(VERSIONS, req)
 
 
 class VolumeVersionV1(object):
@@ -72,7 +76,7 @@ class VolumeVersionV1(object):
                       atom=versions.VersionAtomSerializer)
     def show(self, req):
         builder = views_versions.get_view_builder(req)
-        return builder.build_version(VERSIONS['v2.0'])
+        return builder.build_version(VERSIONS['v1.0'])
 
 
 def create_resource():

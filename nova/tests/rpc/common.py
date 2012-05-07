@@ -21,20 +21,22 @@ Unit Tests for remote procedure calls shared between all implementations
 
 import time
 
+from eventlet import greenthread
 import nose
 
 from nova import context
 from nova import log as logging
-from nova.rpc.common import RemoteError, Timeout
+from nova.rpc import amqp as rpc_amqp
+from nova.rpc import common as rpc_common
 from nova import test
 
 
-LOG = logging.getLogger('nova.tests.rpc')
+LOG = logging.getLogger(__name__)
 
 
-class _BaseRpcTestCase(test.TestCase):
+class BaseRpcTestCase(test.TestCase):
     def setUp(self, supports_timeouts=True):
-        super(_BaseRpcTestCase, self).setUp()
+        super(BaseRpcTestCase, self).setUp()
         self.conn = self.rpc.create_connection(True)
         self.receiver = TestReceiver()
         self.conn.create_consumer('test', self.receiver, False)
@@ -44,20 +46,13 @@ class _BaseRpcTestCase(test.TestCase):
 
     def tearDown(self):
         self.conn.close()
-        super(_BaseRpcTestCase, self).tearDown()
+        super(BaseRpcTestCase, self).tearDown()
 
     def test_call_succeed(self):
         value = 42
         result = self.rpc.call(self.context, 'test', {"method": "echo",
                                                  "args": {"value": value}})
         self.assertEqual(value, result)
-
-    def test_call_succeed_despite_multiple_returns(self):
-        value = 42
-        result = self.rpc.call(self.context, 'test',
-                {"method": "echo_three_times",
-                 "args": {"value": value}})
-        self.assertEqual(value + 2, result)
 
     def test_call_succeed_despite_multiple_returns_yield(self):
         value = 42
@@ -75,15 +70,6 @@ class _BaseRpcTestCase(test.TestCase):
         for i, x in enumerate(result):
             if i > 0:
                 self.fail('should only receive one response')
-            self.assertEqual(value + i, x)
-
-    def test_multicall_succeed_three_times(self):
-        value = 42
-        result = self.rpc.multicall(self.context,
-                              'test',
-                              {"method": "echo_three_times",
-                               "args": {"value": value}})
-        for i, x in enumerate(result):
             self.assertEqual(value + i, x)
 
     def test_multicall_three_nones(self):
@@ -123,7 +109,7 @@ class _BaseRpcTestCase(test.TestCase):
 
         """
         value = 42
-        self.assertRaises(RemoteError,
+        self.assertRaises(rpc_common.RemoteError,
                           self.rpc.call,
                           self.context,
                           'test',
@@ -135,7 +121,7 @@ class _BaseRpcTestCase(test.TestCase):
                      {"method": "fail",
                       "args": {"value": value}})
             self.fail("should have thrown RemoteError")
-        except RemoteError as exc:
+        except rpc_common.RemoteError as exc:
             self.assertEqual(int(exc.value), value)
 
     def test_nested_calls(self):
@@ -146,7 +132,8 @@ class _BaseRpcTestCase(test.TestCase):
                 """Calls echo in the passed queue"""
                 LOG.debug(_("Nested received %(queue)s, %(value)s")
                         % locals())
-                # TODO: so, it will replay the context and use the same REQID?
+                # TODO(comstud):
+                # so, it will replay the context and use the same REQID?
                 # that's bizarre.
                 ret = self.rpc.call(context,
                                queue,
@@ -173,7 +160,7 @@ class _BaseRpcTestCase(test.TestCase):
             raise nose.SkipTest(_("RPC backend does not support timeouts"))
 
         value = 42
-        self.assertRaises(Timeout,
+        self.assertRaises(rpc_common.Timeout,
                           self.rpc.call,
                           self.context,
                           'test',
@@ -186,8 +173,45 @@ class _BaseRpcTestCase(test.TestCase):
                       "args": {"value": value}},
                      timeout=1)
             self.fail("should have thrown Timeout")
-        except Timeout as exc:
+        except rpc_common.Timeout as exc:
             pass
+
+
+class BaseRpcAMQPTestCase(BaseRpcTestCase):
+    """Base test class for all AMQP-based RPC tests"""
+    def test_proxycallback_handles_exceptions(self):
+        """Make sure exceptions unpacking messages don't cause hangs."""
+        orig_unpack = rpc_amqp.unpack_context
+
+        info = {'unpacked': False}
+
+        def fake_unpack_context(*args, **kwargs):
+            info['unpacked'] = True
+            raise test.TestingException('moo')
+
+        self.stubs.Set(rpc_amqp, 'unpack_context', fake_unpack_context)
+
+        value = 41
+        self.rpc.cast(self.context, 'test', {"method": "echo",
+                                             "args": {"value": value}})
+
+        # Wait for the cast to complete.
+        for x in xrange(50):
+            if info['unpacked']:
+                break
+            greenthread.sleep(0.1)
+        else:
+            self.fail("Timeout waiting for message to be consued")
+
+        # Now see if we get a response even though we raised an
+        # exception for the cast above.
+        self.stubs.Set(rpc_amqp, 'unpack_context', orig_unpack)
+
+        value = 42
+        result = self.rpc.call(self.context, 'test',
+                {"method": "echo",
+                 "args": {"value": value}})
+        self.assertEqual(value, result)
 
 
 class TestReceiver(object):
@@ -208,13 +232,6 @@ class TestReceiver(object):
         """Returns dictionary version of context."""
         LOG.debug(_("Received %s"), context)
         return context.to_dict()
-
-    @staticmethod
-    def echo_three_times(context, value):
-        context.reply(value)
-        context.reply(value + 1)
-        context.reply(value + 2)
-        context.reply(ending=True)
 
     @staticmethod
     def multicall_three_nones(context, value):

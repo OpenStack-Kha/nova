@@ -26,11 +26,12 @@ import qpid.messaging
 import qpid.messaging.exceptions
 
 from nova import flags
+from nova import log as logging
 from nova.openstack.common import cfg
 from nova.rpc import amqp as rpc_amqp
 from nova.rpc import common as rpc_common
-from nova.rpc.common import LOG
 
+LOG = logging.getLogger(__name__)
 
 qpid_opts = [
     cfg.StrOpt('qpid_hostname',
@@ -78,7 +79,7 @@ qpid_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(qpid_opts)
+FLAGS.register_opts(qpid_opts)
 
 
 class ConsumerBase(object):
@@ -272,28 +273,45 @@ class NotifyPublisher(Publisher):
 class Connection(object):
     """Connection object."""
 
-    def __init__(self):
+    def __init__(self, server_params=None):
         self.session = None
         self.consumers = {}
         self.consumer_thread = None
 
-        self.broker = FLAGS.qpid_hostname + ":" + FLAGS.qpid_port
+        if server_params is None:
+            server_params = {}
+
+        default_params = dict(hostname=FLAGS.qpid_hostname,
+                port=FLAGS.qpid_port,
+                username=FLAGS.qpid_username,
+                password=FLAGS.qpid_password)
+
+        params = server_params
+        for key in default_params.keys():
+            params.setdefault(key, default_params[key])
+
+        self.broker = params['hostname'] + ":" + str(params['port'])
         # Create the connection - this does not open the connection
         self.connection = qpid.messaging.Connection(self.broker)
 
         # Check if flags are set and if so set them for the connection
         # before we call open
-        self.connection.username = FLAGS.qpid_username
-        self.connection.password = FLAGS.qpid_password
+        self.connection.username = params['username']
+        self.connection.password = params['password']
         self.connection.sasl_mechanisms = FLAGS.qpid_sasl_mechanisms
         self.connection.reconnect = FLAGS.qpid_reconnect
-        self.connection.reconnect_timeout = FLAGS.qpid_reconnect_timeout
-        self.connection.reconnect_limit = FLAGS.qpid_reconnect_limit
-        self.connection.reconnect_interval_max = \
-                                        FLAGS.qpid_reconnect_interval_max
-        self.connection.reconnect_interval_min = \
-                                        FLAGS.qpid_reconnect_interval_min
-        self.connection.reconnect_interval = FLAGS.qpid_reconnect_interval
+        if FLAGS.qpid_reconnect_timeout:
+            self.connection.reconnect_timeout = FLAGS.qpid_reconnect_timeout
+        if FLAGS.qpid_reconnect_limit:
+            self.connection.reconnect_limit = FLAGS.qpid_reconnect_limit
+        if FLAGS.qpid_reconnect_interval_max:
+            self.connection.reconnect_interval_max = (
+                    FLAGS.qpid_reconnect_interval_max)
+        if FLAGS.qpid_reconnect_interval_min:
+            self.connection.reconnect_interval_min = (
+                    FLAGS.qpid_reconnect_interval_min)
+        if FLAGS.qpid_reconnect_interval:
+            self.connection.reconnect_interval = FLAGS.qpid_reconnect_interval
         self.connection.hearbeat = FLAGS.qpid_heartbeat
         self.connection.protocol = FLAGS.qpid_protocol
         self.connection.tcp_nodelay = FLAGS.qpid_tcp_nodelay
@@ -320,12 +338,12 @@ class Connection(object):
             try:
                 self.connection.open()
             except qpid.messaging.exceptions.ConnectionError, e:
-                LOG.error(_('Unable to connect to AMQP server: %s ' % str(e)))
+                LOG.error(_('Unable to connect to AMQP server: %s ') % e)
                 time.sleep(FLAGS.qpid_reconnect_interval or 1)
             else:
                 break
 
-        LOG.info(_('Connected to AMQP server on %s' % self.broker))
+        LOG.info(_('Connected to AMQP server on %s') % self.broker)
 
         self.session = self.connection.session()
 
@@ -388,7 +406,10 @@ class Connection(object):
 
         def _consume():
             nxt_receiver = self.session.next_receiver(timeout=timeout)
-            self._lookup_consumer(nxt_receiver).consume()
+            try:
+                self._lookup_consumer(nxt_receiver).consume()
+            except Exception:
+                LOG.exception(_("Error processing message.  Skipping it."))
 
         for iteration in itertools.count(0):
             if limit and iteration >= limit:
@@ -474,46 +495,58 @@ class Connection(object):
         """Create a consumer that calls a method in a proxy object"""
         if fanout:
             consumer = FanoutConsumer(self.session, topic,
-                                      rpc_amqp.ProxyCallback(proxy))
+                    rpc_amqp.ProxyCallback(proxy, Connection.pool))
         else:
             consumer = TopicConsumer(self.session, topic,
-                                     rpc_amqp.ProxyCallback(proxy))
+                    rpc_amqp.ProxyCallback(proxy, Connection.pool))
         self._register_consumer(consumer)
         return consumer
 
 
-rpc_amqp.ConnectionClass = Connection
+Connection.pool = rpc_amqp.Pool(connection_cls=Connection)
 
 
 def create_connection(new=True):
     """Create a connection"""
-    return rpc_amqp.create_connection(new)
+    return rpc_amqp.create_connection(new, Connection.pool)
 
 
 def multicall(context, topic, msg, timeout=None):
     """Make a call that returns multiple times."""
-    return rpc_amqp.multicall(context, topic, msg, timeout)
+    return rpc_amqp.multicall(context, topic, msg, timeout, Connection.pool)
 
 
 def call(context, topic, msg, timeout=None):
     """Sends a message on a topic and wait for a response."""
-    return rpc_amqp.call(context, topic, msg, timeout)
+    return rpc_amqp.call(context, topic, msg, timeout, Connection.pool)
 
 
 def cast(context, topic, msg):
     """Sends a message on a topic without waiting for a response."""
-    return rpc_amqp.cast(context, topic, msg)
+    return rpc_amqp.cast(context, topic, msg, Connection.pool)
 
 
 def fanout_cast(context, topic, msg):
     """Sends a message on a fanout exchange without waiting for a response."""
-    return rpc_amqp.fanout_cast(context, topic, msg)
+    return rpc_amqp.fanout_cast(context, topic, msg, Connection.pool)
+
+
+def cast_to_server(context, server_params, topic, msg):
+    """Sends a message on a topic to a specific server."""
+    return rpc_amqp.cast_to_server(context, server_params, topic, msg,
+            Connection.pool)
+
+
+def fanout_cast_to_server(context, server_params, topic, msg):
+    """Sends a message on a fanout exchange to a specific server."""
+    return rpc_amqp.fanout_cast_to_server(context, server_params, topic,
+            msg, Connection.pool)
 
 
 def notify(context, topic, msg):
     """Sends a notification event on a topic."""
-    return rpc_amqp.notify(context, topic, msg)
+    return rpc_amqp.notify(context, topic, msg, Connection.pool)
 
 
 def cleanup():
-    return rpc_amqp.cleanup()
+    return rpc_amqp.cleanup(Connection.pool)

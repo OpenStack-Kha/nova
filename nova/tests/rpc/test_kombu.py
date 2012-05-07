@@ -19,33 +19,37 @@
 Unit Tests for remote procedure calls using kombu
 """
 
+from nova import context
+from nova import flags
 from nova import log as logging
 from nova import test
+from nova.rpc import amqp as rpc_amqp
 from nova.rpc import impl_kombu
 from nova.tests.rpc import common
 
-
-LOG = logging.getLogger('nova.tests.rpc')
+FLAGS = flags.FLAGS
+LOG = logging.getLogger(__name__)
 
 
 class MyException(Exception):
     pass
 
 
-def _raise_exc_stub(stubs, times, obj, method, exc_msg):
+def _raise_exc_stub(stubs, times, obj, method, exc_msg,
+        exc_class=MyException):
     info = {'called': 0}
     orig_method = getattr(obj, method)
 
     def _raise_stub(*args, **kwargs):
         info['called'] += 1
         if info['called'] <= times:
-            raise MyException(exc_msg)
+            raise exc_class(exc_msg)
         orig_method(*args, **kwargs)
     stubs.Set(obj, method, _raise_stub)
     return info
 
 
-class RpcKombuTestCase(common._BaseRpcTestCase):
+class RpcKombuTestCase(common.BaseRpcAMQPTestCase):
     def setUp(self):
         self.rpc = impl_kombu
         super(RpcKombuTestCase, self).setUp()
@@ -98,6 +102,61 @@ class RpcKombuTestCase(common._BaseRpcTestCase):
         conn.close()
 
         self.assertEqual(self.received_message, message)
+
+    def test_cast_interface_uses_default_options(self):
+        """Test kombu rpc.cast"""
+
+        ctxt = context.RequestContext('fake_user', 'fake_project')
+
+        class MyConnection(impl_kombu.Connection):
+            def __init__(myself, *args, **kwargs):
+                super(MyConnection, myself).__init__(*args, **kwargs)
+                self.assertEqual(myself.params,
+                        {'hostname': FLAGS.rabbit_host,
+                         'userid': FLAGS.rabbit_userid,
+                         'password': FLAGS.rabbit_password,
+                         'port': FLAGS.rabbit_port,
+                         'virtual_host': FLAGS.rabbit_virtual_host,
+                         'transport': 'memory'})
+
+            def topic_send(_context, topic, msg):
+                pass
+
+        MyConnection.pool = rpc_amqp.Pool(connection_cls=MyConnection)
+        self.stubs.Set(impl_kombu, 'Connection', MyConnection)
+
+        impl_kombu.cast(ctxt, 'fake_topic', {'msg': 'fake'})
+
+    def test_cast_to_server_uses_server_params(self):
+        """Test kombu rpc.cast"""
+
+        ctxt = context.RequestContext('fake_user', 'fake_project')
+
+        server_params = {'username': 'fake_username',
+                         'password': 'fake_password',
+                         'hostname': 'fake_hostname',
+                         'port': 31337,
+                         'virtual_host': 'fake_virtual_host'}
+
+        class MyConnection(impl_kombu.Connection):
+            def __init__(myself, *args, **kwargs):
+                super(MyConnection, myself).__init__(*args, **kwargs)
+                self.assertEqual(myself.params,
+                        {'hostname': server_params['hostname'],
+                         'userid': server_params['username'],
+                         'password': server_params['password'],
+                         'port': server_params['port'],
+                         'virtual_host': server_params['virtual_host'],
+                         'transport': 'memory'})
+
+            def topic_send(_context, topic, msg):
+                pass
+
+        MyConnection.pool = rpc_amqp.Pool(connection_cls=MyConnection)
+        self.stubs.Set(impl_kombu, 'Connection', MyConnection)
+
+        impl_kombu.cast_to_server(ctxt, server_params,
+                'fake_topic', {'msg': 'fake'})
 
     @test.skip_test("kombu memory transport seems buggy with fanout queues "
             "as this test passes when you use rabbit (fake_rabbit=False)")
@@ -153,6 +212,18 @@ class RpcKombuTestCase(common._BaseRpcTestCase):
                 'test_topic', None)
 
         self.assertEqual(info['called'], 2)
+        self.assertTrue(isinstance(result, self.rpc.DirectConsumer))
+
+    def test_declare_consumer_ioerrors_will_reconnect(self):
+        """Test that an IOError exception causes a reconnection"""
+        info = _raise_exc_stub(self.stubs, 2, self.rpc.DirectConsumer,
+                '__init__', 'Socket closed', exc_class=IOError)
+
+        conn = self.rpc.Connection()
+        result = conn.declare_consumer(self.rpc.DirectConsumer,
+                'test_topic', None)
+
+        self.assertEqual(info['called'], 3)
         self.assertTrue(isinstance(result, self.rpc.DirectConsumer))
 
     def test_publishing_errors_will_reconnect(self):

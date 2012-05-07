@@ -16,6 +16,7 @@
 
 import itertools
 import socket
+import ssl
 import sys
 import time
 import uuid
@@ -27,14 +28,29 @@ import kombu.entity
 import kombu.messaging
 import kombu.connection
 
-from nova import context
-from nova import exception
 from nova import flags
-from nova.rpc import common as rpc_common
+from nova.openstack.common import cfg
 from nova.rpc import amqp as rpc_amqp
+from nova.rpc import common as rpc_common
 
+kombu_opts = [
+    cfg.StrOpt('kombu_ssl_version',
+               default='',
+               help='SSL version to use (valid only if SSL enabled)'),
+    cfg.StrOpt('kombu_ssl_keyfile',
+               default='',
+               help='SSL key file (valid only if SSL enabled)'),
+    cfg.StrOpt('kombu_ssl_certfile',
+               default='',
+               help='SSL cert file (valid only if SSL enabled)'),
+    cfg.StrOpt('kombu_ssl_ca_certs',
+               default='',
+               help=('SSL certification authority file '
+                    '(valid only if SSL enabled)')),
+    ]
 
 FLAGS = flags.FLAGS
+FLAGS.register_opts(kombu_opts)
 LOG = rpc_common.LOG
 
 
@@ -92,8 +108,11 @@ class ConsumerBase(object):
 
         def _callback(raw_message):
             message = self.channel.message_to_python(raw_message)
-            callback(message.payload)
-            message.ack()
+            try:
+                callback(message.payload)
+                message.ack()
+            except Exception:
+                LOG.exception(_("Failed to process message... skipping it."))
 
         self.queue.consume(*args, callback=_callback, **options)
         self.reconsume = lambda: self.consume(*args, **options)
@@ -316,7 +335,7 @@ class NotifyPublisher(TopicPublisher):
 class Connection(object):
     """Connection object."""
 
-    def __init__(self):
+    def __init__(self, server_params=None):
         self.consumers = []
         self.consumer_thread = None
         self.max_retries = FLAGS.rabbit_max_retries
@@ -329,6 +348,7 @@ class Connection(object):
         self.interval_max = 30
         self.memory_transport = False
 
+<<<<<<< HEAD
         self.params_list = []
         for adr in FLAGS.rabbit_addresses.split(','):
             hostname, port = adr.split(':')
@@ -340,15 +360,68 @@ class Connection(object):
             if FLAGS.fake_rabbit:
                 params['transport'] = 'memory'
             self.params_list.append(params)
+=======
+        if server_params is None:
+            server_params = {}
+
+        # Keys to translate from server_params to kombu params
+        server_params_to_kombu_params = {'username': 'userid'}
+
+        params = {}
+        for sp_key, value in server_params.iteritems():
+            p_key = server_params_to_kombu_params.get(sp_key, sp_key)
+            params[p_key] = value
+
+        params.setdefault('hostname', FLAGS.rabbit_host)
+        params.setdefault('port', FLAGS.rabbit_port)
+        params.setdefault('userid', FLAGS.rabbit_userid)
+        params.setdefault('password', FLAGS.rabbit_password)
+        params.setdefault('virtual_host', FLAGS.rabbit_virtual_host)
+
+        self.params = params
+>>>>>>> source/stable/essex
 
         if FLAGS.fake_rabbit:
             self.memory_transport = True
         else:
             self.memory_transport = False
+
+        if FLAGS.rabbit_use_ssl:
+            self.params['ssl'] = self._fetch_ssl_params()
+
         self.connection = None
         self.reconnect()
 
+<<<<<<< HEAD
     def _connect(self, params):
+=======
+    def _fetch_ssl_params(self):
+        """Handles fetching what ssl params
+        should be used for the connection (if any)"""
+        ssl_params = dict()
+
+        # http://docs.python.org/library/ssl.html - ssl.wrap_socket
+        if FLAGS.kombu_ssl_version:
+            ssl_params['ssl_version'] = FLAGS.kombu_ssl_version
+        if FLAGS.kombu_ssl_keyfile:
+            ssl_params['keyfile'] = FLAGS.kombu_ssl_keyfile
+        if FLAGS.kombu_ssl_certfile:
+            ssl_params['certfile'] = FLAGS.kombu_ssl_certfile
+        if FLAGS.kombu_ssl_ca_certs:
+            ssl_params['ca_certs'] = FLAGS.kombu_ssl_ca_certs
+            # We might want to allow variations in the
+            # future with this?
+            ssl_params['cert_reqs'] = ssl.CERT_REQUIRED
+
+        if not ssl_params:
+            # Just have the default behavior
+            return True
+        else:
+            # Return the extended behavior
+            return ssl_params
+
+    def _connect(self):
+>>>>>>> source/stable/essex
         """Connect to rabbit.  Re-establish any queues that may have
         been declared before if we are reconnecting.  Exceptions should
         be handled by the caller.
@@ -378,7 +451,11 @@ class Connection(object):
         for consumer in self.consumers:
             consumer.reconnect(self.channel)
         LOG.info(_('Connected to AMQP server on '
+<<<<<<< HEAD
                 '%(hostname)s:%(port)d' % params))
+=======
+                '%(hostname)s:%(port)d') % self.params)
+>>>>>>> source/stable/essex
 
     def reconnect(self):
         """Handles reconnecting and re-establishing queues.
@@ -396,7 +473,7 @@ class Connection(object):
             try:
                 self._connect(params)
                 return
-            except self.connection_errors, e:
+            except (self.connection_errors, IOError), e:
                 pass
             except Exception, e:
                 # NOTE(comstud): Unfortunately it's possible for amqplib
@@ -439,7 +516,7 @@ class Connection(object):
         while True:
             try:
                 return method(*args, **kwargs)
-            except (self.connection_errors, socket.timeout), e:
+            except (self.connection_errors, socket.timeout, IOError), e:
                 pass
             except Exception, e:
                 # NOTE(comstud): Unfortunately it's possible for amqplib
@@ -601,43 +678,56 @@ class Connection(object):
         """Create a consumer that calls a method in a proxy object"""
         if fanout:
             self.declare_fanout_consumer(topic,
-                                         rpc_amqp.ProxyCallback(proxy))
+                    rpc_amqp.ProxyCallback(proxy, Connection.pool))
         else:
-            self.declare_topic_consumer(topic, rpc_amqp.ProxyCallback(proxy))
+            self.declare_topic_consumer(topic,
+                    rpc_amqp.ProxyCallback(proxy, Connection.pool))
 
 
-rpc_amqp.ConnectionClass = Connection
+Connection.pool = rpc_amqp.Pool(connection_cls=Connection)
 
 
 def create_connection(new=True):
     """Create a connection"""
-    return rpc_amqp.create_connection(new)
+    return rpc_amqp.create_connection(new, Connection.pool)
 
 
 def multicall(context, topic, msg, timeout=None):
     """Make a call that returns multiple times."""
-    return rpc_amqp.multicall(context, topic, msg, timeout)
+    return rpc_amqp.multicall(context, topic, msg, timeout, Connection.pool)
 
 
 def call(context, topic, msg, timeout=None):
     """Sends a message on a topic and wait for a response."""
-    return rpc_amqp.call(context, topic, msg, timeout)
+    return rpc_amqp.call(context, topic, msg, timeout, Connection.pool)
 
 
 def cast(context, topic, msg):
     """Sends a message on a topic without waiting for a response."""
-    return rpc_amqp.cast(context, topic, msg)
+    return rpc_amqp.cast(context, topic, msg, Connection.pool)
 
 
 def fanout_cast(context, topic, msg):
     """Sends a message on a fanout exchange without waiting for a response."""
-    return rpc_amqp.fanout_cast(context, topic, msg)
+    return rpc_amqp.fanout_cast(context, topic, msg, Connection.pool)
+
+
+def cast_to_server(context, server_params, topic, msg):
+    """Sends a message on a topic to a specific server."""
+    return rpc_amqp.cast_to_server(context, server_params, topic, msg,
+            Connection.pool)
+
+
+def fanout_cast_to_server(context, server_params, topic, msg):
+    """Sends a message on a fanout exchange to a specific server."""
+    return rpc_amqp.cast_to_server(context, server_params, topic, msg,
+            Connection.pool)
 
 
 def notify(context, topic, msg):
     """Sends a notification event on a topic."""
-    return rpc_amqp.notify(context, topic, msg)
+    return rpc_amqp.notify(context, topic, msg, Connection.pool)
 
 
 def cleanup():
-    return rpc_amqp.cleanup()
+    return rpc_amqp.cleanup(Connection.pool)

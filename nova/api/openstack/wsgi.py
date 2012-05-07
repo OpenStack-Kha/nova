@@ -18,10 +18,11 @@
 import inspect
 from xml.dom import minidom
 from xml.parsers import expat
+import math
+import time
 
 from lxml import etree
 import webob
-from webob import exc
 
 from nova import exception
 from nova import log as logging
@@ -34,7 +35,7 @@ XMLNS_V11 = 'http://docs.openstack.org/compute/api/v1.1'
 
 XMLNS_ATOM = 'http://www.w3.org/2005/Atom'
 
-LOG = logging.getLogger('nova.api.openstack.wsgi')
+LOG = logging.getLogger(__name__)
 
 # The vendor content types should serialize identically to the non-vendor
 # content types. So to avoid littering the code with both options, we
@@ -61,7 +62,7 @@ _MEDIA_TYPE_MAP = {
 
 
 class Request(webob.Request):
-    """Add some Openstack API-specific logic to the base webob.Request."""
+    """Add some OpenStack API-specific logic to the base webob.Request."""
 
     def best_match_content_type(self):
         """Determine the requested response content-type."""
@@ -79,8 +80,8 @@ class Request(webob.Request):
             if not content_type:
                 content_type = self.accept.best_match(SUPPORTED_CONTENT_TYPES)
 
-            self.environ['nova.best_content_type'] = content_type or \
-                'application/json'
+            self.environ['nova.best_content_type'] = (content_type or
+                                                      'application/json')
 
         return self.environ['nova.best_content_type']
 
@@ -199,6 +200,17 @@ class XMLDeserializer(TextDeserializer):
             if child.nodeType == child.TEXT_NODE:
                 return child.nodeValue
         return ""
+
+    def find_attribute_or_element(self, parent, name):
+        """Get an attribute value; fallback to an element if not found"""
+        if parent.hasAttribute(name):
+            return parent.getAttribute(name)
+
+        node = self.find_first_child_named(parent, name)
+        if node:
+            return self.extract_text(node)
+
+        return None
 
     def default(self, datastring):
         return {'body': self._from_xml(datastring)}
@@ -562,8 +574,13 @@ class ResourceExceptionHandler(object):
         if isinstance(ex_value, exception.NotAuthorized):
             msg = unicode(ex_value)
             raise Fault(webob.exc.HTTPForbidden(explanation=msg))
+        elif isinstance(ex_value, exception.Invalid):
+            raise Fault(exception.ConvertedException(
+                code=ex_value.code, explanation=unicode(ex_value)))
         elif isinstance(ex_value, TypeError):
-            LOG.exception(ex_value)
+            exc_info = (ex_type, ex_value, ex_traceback)
+            LOG.error(_('Exception handling resource: %s') % ex_value,
+                    exc_info=exc_info)
             raise Fault(webob.exc.HTTPBadRequest())
         elif isinstance(ex_value, Fault):
             LOG.info(_("Fault thrown: %s"), unicode(ex_value))
@@ -848,8 +865,7 @@ class Resource(wsgi.Application):
 
             # Run post-processing extensions
             if resp_obj:
-                if context:
-                    resp_obj['x-compute-request-id'] = context.request_id
+                _set_request_id_header(request, resp_obj)
                 # Do a preserialize to set up the response object
                 serializers = getattr(meth, 'wsgi_serializers', {})
                 resp_obj._bind_method_serializers(serializers)
@@ -870,7 +886,7 @@ class Resource(wsgi.Application):
             msg = _("%(url)s returned with HTTP %(status)d") % msg_dict
         except AttributeError, e:
             msg_dict = dict(url=request.url, e=e)
-            msg = _("%(url)s returned a fault: %(e)s" % msg_dict)
+            msg = _("%(url)s returned a fault: %(e)s") % msg_dict
 
         LOG.info(msg)
 
@@ -885,7 +901,7 @@ class Resource(wsgi.Application):
                 meth = getattr(self, action)
             else:
                 meth = getattr(self.controller, action)
-        except AttributeError as ex:
+        except AttributeError:
             if (not self.wsgi_actions or
                 action not in ['action', 'create', 'delete']):
                 # Propagate the error
@@ -1006,10 +1022,10 @@ class Fault(webob.exc.HTTPException):
     _fault_names = {
             400: "badRequest",
             401: "unauthorized",
-            403: "resizeNotAllowed",
+            403: "forbidden",
             404: "itemNotFound",
             405: "badMethod",
-            409: "inProgress",  # FIXME(comstud): This doesn't seem right
+            409: "conflictingRequest",
             413: "overLimit",
             415: "badMediaType",
             501: "notImplemented",
@@ -1047,6 +1063,7 @@ class Fault(webob.exc.HTTPException):
 
         self.wrapped_exc.body = serializer.serialize(fault_data)
         self.wrapped_exc.content_type = content_type
+        _set_request_id_header(req, self.wrapped_exc.headers)
 
         return self.wrapped_exc
 
@@ -1063,7 +1080,8 @@ class OverLimitFault(webob.exc.HTTPException):
         """
         Initialize new `OverLimitFault` with relevant information.
         """
-        self.wrapped_exc = webob.exc.HTTPRequestEntityTooLarge()
+        hdrs = OverLimitFault._retry_after(retry_time)
+        self.wrapped_exc = webob.exc.HTTPRequestEntityTooLarge(headers=hdrs)
         self.content = {
             "overLimitFault": {
                 "code": self.wrapped_exc.status_int,
@@ -1071,6 +1089,13 @@ class OverLimitFault(webob.exc.HTTPException):
                 "details": details,
             },
         }
+
+    @staticmethod
+    def _retry_after(retry_time):
+        delay = int(math.ceil(retry_time - time.time()))
+        retry_after = delay if delay > 0 else 0
+        headers = {'Retry-After': '%d' % retry_after}
+        return headers
 
     @webob.dec.wsgify(RequestClass=Request)
     def __call__(self, request):
@@ -1091,3 +1116,9 @@ class OverLimitFault(webob.exc.HTTPException):
         self.wrapped_exc.body = content
 
         return self.wrapped_exc
+
+
+def _set_request_id_header(req, headers):
+    context = req.environ.get('nova.context')
+    if context:
+        headers['x-compute-request-id'] = context.request_id

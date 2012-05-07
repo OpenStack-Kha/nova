@@ -21,17 +21,19 @@ their attributes like VDIs, VIFs, as well as their lookup functions.
 """
 
 import contextlib
+import cPickle as pickle
+import decimal
 import json
 import os
-import pickle
 import re
-import sys
-import tempfile
 import time
 import urllib
+import urlparse
 import uuid
-from decimal import Decimal, InvalidOperation
 from xml.dom import minidom
+from xml.parsers import expat
+
+from eventlet import greenthread
 
 from nova import exception
 from nova import flags
@@ -42,11 +44,11 @@ from nova import utils
 from nova.compute import instance_types
 from nova.compute import power_state
 from nova.virt.disk import api as disk
-from nova.virt.xenapi import HelperBase
+from nova.virt import xenapi
 from nova.virt.xenapi import volume_utils
 
 
-LOG = logging.getLogger("nova.virt.xenapi.vm_utils")
+LOG = logging.getLogger(__name__)
 
 xenapi_vm_utils_opts = [
     cfg.StrOpt('default_os_type',
@@ -67,10 +69,16 @@ xenapi_vm_utils_opts = [
                     'other-config:my_favorite_sr=true. On the other hand, to '
                     'fall back on the Default SR, as displayed by XenCenter, '
                     'set this flag to: default-sr:true'),
+    cfg.BoolOpt('xenapi_sparse_copy',
+                default=True,
+                help='Whether to use sparse_copy for copying data on a '
+                     'resize down (False will use standard dd). This speeds '
+                     'up resizes down considerably since large runs of zeros '
+                     'won\'t have to be rsynced')
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(xenapi_vm_utils_opts)
+FLAGS.register_opts(xenapi_vm_utils_opts)
 
 XENAPI_POWER_STATE = {
     'Halted': power_state.SHUTDOWN,
@@ -87,15 +95,15 @@ KERNEL_DIR = '/boot/guest'
 
 
 class ImageType:
-    """
-    Enumeration class for distinguishing different image types
-        0 - kernel image (goes on dom0's filesystem)
-        1 - ramdisk image (goes on dom0's filesystem)
-        2 - disk image (local SR, partitioned by objectstore plugin)
-        3 - raw disk image (local SR, NOT partitioned by plugin)
-        4 - vhd disk image (local SR, NOT inspected by XS, PV assumed for
-            linux, HVM assumed for Windows)
-        5 - ISO disk image (local SR, NOT partitioned by plugin)
+    """Enumeration class for distinguishing different image types
+
+    | 0 - kernel image (goes on dom0's filesystem)
+    | 1 - ramdisk image (goes on dom0's filesystem)
+    | 2 - disk image (local SR, partitioned by objectstore plugin)
+    | 3 - raw disk image (local SR, NOT partitioned by plugin)
+    | 4 - vhd disk image (local SR, NOT inspected by XS, PV assumed for
+    |     linux, HVM assumed for Windows)
+    | 5 - ISO disk image (local SR, NOT partitioned by plugin)
     """
 
     KERNEL = 0
@@ -124,7 +132,7 @@ class ImageType:
         return dict(zip(ImageType._strs, ImageType._ids)).get(image_type_str)
 
 
-class VMHelper(HelperBase):
+class VMHelper(xenapi.HelperBase):
     """
     The class that wraps the helper methods together.
     """
@@ -167,8 +175,8 @@ class VMHelper(HelperBase):
             'memory_target': mem,
             'name_description': '',
             'name_label': instance.name,
-            'other_config': {'allowvssprovider': False},
-            'other_config': {},
+            'other_config': {'allowvssprovider': str(False),
+                             'nova_uuid': str(instance.uuid), },
             'PCI_bus': '',
             'platform': {'acpi': 'true', 'apic': 'true', 'pae': 'true',
                          'viridian': 'true', 'timeoffset': '0'},
@@ -222,30 +230,6 @@ class VMHelper(HelperBase):
         return host_free_mem >= mem
 
     @classmethod
-    def create_cd_vbd(cls, session, vm_ref, vdi_ref, userdevice, bootable):
-        """Create a VBD record.  Returns a Deferred that gives the new
-        VBD reference specific to CDRom devices."""
-        vbd_rec = {}
-        vbd_rec['VM'] = vm_ref
-        vbd_rec['VDI'] = vdi_ref
-        vbd_rec['userdevice'] = str(userdevice)
-        vbd_rec['bootable'] = bootable
-        vbd_rec['mode'] = 'RO'
-        vbd_rec['type'] = 'CD'
-        vbd_rec['unpluggable'] = True
-        vbd_rec['empty'] = False
-        vbd_rec['other_config'] = {}
-        vbd_rec['qos_algorithm_type'] = ''
-        vbd_rec['qos_algorithm_params'] = {}
-        vbd_rec['qos_supported_algorithms'] = []
-        LOG.debug(_('Creating a CDROM-specific VBD for VM %(vm_ref)s,'
-                ' VDI %(vdi_ref)s ... ') % locals())
-        vbd_ref = session.call_xenapi('VBD.create', vbd_rec)
-        LOG.debug(_('Created a CDROM-specific VBD %(vbd_ref)s '
-                ' for VM %(vm_ref)s, VDI %(vdi_ref)s.') % locals())
-        return vbd_ref
-
-    @classmethod
     def find_vbd_by_number(cls, session, vm_ref, number):
         """Get the VBD reference from the device number"""
         vbd_refs = session.call_xenapi("VM.get_VBDs", vm_ref)
@@ -275,18 +259,40 @@ class VMHelper(HelperBase):
     def destroy_vbd(cls, session, vbd_ref):
         """Destroy VBD from host database"""
         try:
-            task = session.call_xenapi('Async.VBD.destroy', vbd_ref)
-            session.wait_for_task(task)
+            session.call_xenapi('VBD.destroy', vbd_ref)
         except cls.XenAPI.Failure, exc:
             LOG.exception(exc)
             raise volume_utils.StorageError(
                     _('Unable to destroy VBD %s') % vbd_ref)
 
     @classmethod
+    def create_vbd(cls, session, vm_ref, vdi_ref, userdevice,
+                   vbd_type='disk', read_only=False, bootable=False):
+        """Create a VBD record and returns its reference."""
+        vbd_rec = {}
+        vbd_rec['VM'] = vm_ref
+        vbd_rec['VDI'] = vdi_ref
+        vbd_rec['userdevice'] = str(userdevice)
+        vbd_rec['bootable'] = bootable
+        vbd_rec['mode'] = read_only and 'RO' or 'RW'
+        vbd_rec['type'] = vbd_type
+        vbd_rec['unpluggable'] = True
+        vbd_rec['empty'] = False
+        vbd_rec['other_config'] = {}
+        vbd_rec['qos_algorithm_type'] = ''
+        vbd_rec['qos_algorithm_params'] = {}
+        vbd_rec['qos_supported_algorithms'] = []
+        LOG.debug(_('Creating %(vbd_type)s-type VBD for VM %(vm_ref)s,'
+                ' VDI %(vdi_ref)s ... ') % locals())
+        vbd_ref = session.call_xenapi('VBD.create', vbd_rec)
+        LOG.debug(_('Created VBD %(vbd_ref)s for VM %(vm_ref)s,'
+                ' VDI %(vdi_ref)s.') % locals())
+        return vbd_ref
+
+    @classmethod
     def destroy_vdi(cls, session, vdi_ref):
         try:
-            task = session.call_xenapi('Async.VDI.destroy', vdi_ref)
-            session.wait_for_task(task)
+            session.call_xenapi('VDI.destroy', vdi_ref)
         except cls.XenAPI.Failure, exc:
             LOG.exception(exc)
             raise volume_utils.StorageError(
@@ -310,6 +316,22 @@ class VMHelper(HelperBase):
         LOG.debug(_('Created VDI %(vdi_ref)s (%(name_label)s,'
                 ' %(virtual_size)s, %(read_only)s) on %(sr_ref)s.')
                 % locals())
+        return vdi_ref
+
+    @classmethod
+    def copy_vdi(cls, session, sr_ref, vdi_to_copy_ref):
+        """Copy a VDI and return the new VDIs reference."""
+        vdi_ref = session.call_xenapi('VDI.copy', vdi_to_copy_ref, sr_ref)
+        LOG.debug(_('Copied VDI %(vdi_ref)s from VDI '
+                    '%(vdi_to_copy_ref)s on %(sr_ref)s.') % locals())
+        return vdi_ref
+
+    @classmethod
+    def clone_vdi(cls, session, vdi_to_clone_ref):
+        """Clones a VDI and return the new VDIs reference."""
+        vdi_ref = session.call_xenapi('VDI.clone', vdi_to_clone_ref)
+        LOG.debug(_('Cloned VDI %(vdi_ref)s from VDI '
+                    '%(vdi_to_clone_ref)s') % locals())
         return vdi_ref
 
     @classmethod
@@ -342,8 +364,7 @@ class VMHelper(HelperBase):
 
         original_parent_uuid = get_vhd_parent_uuid(session, vm_vdi_ref)
 
-        task = session.call_xenapi('Async.VM.snapshot', vm_ref, label)
-        template_vm_ref = session.wait_for_task(task, instance['uuid'])
+        template_vm_ref = session.call_xenapi('VM.snapshot', vm_ref, label)
         template_vdi_rec = cls.get_vdi_for_vm_safely(session,
                 template_vm_ref)[1]
         template_vdi_uuid = template_vdi_rec["uuid"]
@@ -351,11 +372,11 @@ class VMHelper(HelperBase):
         LOG.debug(_('Created snapshot %(template_vm_ref)s from'
                 ' VM %(vm_ref)s.') % locals())
 
-        parent_uuid = _wait_for_vhd_coalesce(
+        parent_uuid, base_uuid = _wait_for_vhd_coalesce(
             session, instance, sr_ref, vm_vdi_ref, original_parent_uuid)
 
-        #TODO(sirp): we need to assert only one parent, not parents two deep
-        template_vdi_uuids = {'image': parent_uuid,
+        template_vdi_uuids = {'base': base_uuid,
+                              'image': parent_uuid,
                               'snap': template_vdi_uuid}
         return template_vm_ref, template_vdi_uuids
 
@@ -372,14 +393,23 @@ class VMHelper(HelperBase):
         return os.path.join(FLAGS.xenapi_sr_base_path, sr_uuid)
 
     @classmethod
+    def find_cached_image(cls, session, image_id, sr_ref):
+        """Returns the vdi-ref of the cached image."""
+        for vdi_ref, vdi_rec in _get_all_vdis_in_sr(session, sr_ref):
+            if ('image-id' in vdi_rec['other_config'] and
+                vdi_rec['other_config']['image-id'] == image_id):
+                    return vdi_ref
+        return None
+
+    @classmethod
     def upload_image(cls, context, session, instance, vdi_uuids, image_id):
         """ Requests that the Glance plugin bundle the specified VDIs and
         push them into Glance using the specified human-friendly name.
         """
         # NOTE(sirp): Currently we only support uploading images as VHD, there
         # is no RAW equivalent (yet)
-        logging.debug(_("Asking xapi to upload %(vdi_uuids)s as"
-                " ID %(image_id)s") % locals())
+        LOG.debug(_("Asking xapi to upload %(vdi_uuids)s as"
+                    " ID %(image_id)s") % locals())
 
         glance_host, glance_port = glance.pick_glance_api_server()
 
@@ -396,8 +426,7 @@ class VMHelper(HelperBase):
                   'properties': properties}
 
         kwargs = {'params': pickle.dumps(params)}
-        task = session.async_call_plugin('glance', 'upload_vhd', kwargs)
-        session.wait_for_task(task, instance['uuid'])
+        session.call_plugin('glance', 'upload_vhd', kwargs)
 
     @classmethod
     def resize_disk(cls, session, vdi_ref, instance_type):
@@ -405,7 +434,6 @@ class VMHelper(HelperBase):
         # NOTE(jerdfelt): Would be nice to just set vdi_ref to read/write
         sr_ref = cls.safe_find_sr(session)
         copy_ref = session.call_xenapi('VDI.copy', vdi_ref, sr_ref)
-        copy_uuid = session.call_xenapi('VDI.get_uuid', copy_ref)
 
         try:
             # Resize partition and filesystem down
@@ -449,7 +477,7 @@ class VMHelper(HelperBase):
             if len(partitions) != 1:
                 return
 
-            num, start, old_sectors, ptype = partitions[0]
+            _num, start, old_sectors, ptype = partitions[0]
             if ptype in ('ext3', 'ext4'):
                 new_sectors = new_gb * 1024 * 1024 * 1024 / SECTOR_SIZE
                 _resize_part_and_fs(dev, start, old_sectors, new_sectors)
@@ -502,8 +530,8 @@ class VMHelper(HelperBase):
                                   run_as_root=True)
 
             # 4. Create VBD between instance VM and swap VDI
-            volume_utils.VolumeHelper.create_vbd(
-                session, vm_ref, vdi_ref, userdevice, bootable=False)
+            cls.create_vbd(session, vm_ref, vdi_ref, userdevice,
+                           bootable=False)
         except Exception:
             with utils.save_and_reraise_exception():
                 cls.destroy_vdi(session, vdi_ref)
@@ -543,8 +571,109 @@ class VMHelper(HelperBase):
         return vdi_ref
 
     @classmethod
-    def fetch_image(cls, context, session, instance, image, user_id,
-                    project_id, image_type):
+    def create_kernel_image(cls, context, session, instance, image, user_id,
+                            project_id, image_type):
+        """Creates kernel/ramdisk file from the image stored in the cache.
+        If the image is not present in the cache, it streams it from glance.
+
+        Returns: A list of dictionaries that describe VDIs
+        """
+        filename = ""
+        if FLAGS.cache_images:
+            args = {}
+            args['cached-image'] = image
+            args['new-image-uuid'] = str(uuid.uuid4())
+            filename = session.call_plugin('glance', 'create_kernel_ramdisk',
+                                           args)
+
+        if filename == "":
+            return cls.fetch_image(context, session, instance, image,
+                                   user_id, project_id, image_type)
+        else:
+            return [dict(vdi_type=ImageType.to_string(image_type),
+                         vdi_uuid=None,
+                         file=filename)]
+
+    @classmethod
+    def create_image(cls, context, session, instance, image, user_id,
+                     project_id, image_type):
+        """Creates VDI from the image stored in the local cache. If the image
+        is not present in the cache, it streams it from glance.
+
+        Returns: A list of dictionaries that describe VDIs
+        """
+        if FLAGS.cache_images == False or image_type == ImageType.DISK_ISO:
+            # If caching is disabled, we do not have to keep a copy of the
+            # image. Fetch the image from glance.
+            return cls.fetch_image(context, session,
+                instance, instance.image_ref,
+                instance.user_id, instance.project_id,
+                image_type)
+
+        sr_ref = cls.safe_find_sr(session)
+        sr_type = session.call_xenapi('SR.get_record', sr_ref)["type"]
+        vdi_return_list = []
+
+        if FLAGS.use_cow_images and sr_type != "ext":
+            LOG.warning(_("Fast cloning is only supported on default local SR "
+                          "of type ext. SR on this system was found to be of "
+                          "type %(sr_type)s. Ignoring the cow flag.")
+                          % locals())
+
+        vdi_ref = cls.find_cached_image(session, image, sr_ref)
+        if vdi_ref is None:
+            vdis = cls.fetch_image(context, session, instance, image, user_id,
+                                   project_id, image_type)
+            vdi_ref = session.call_xenapi('VDI.get_by_uuid',
+                                          vdis[0]['vdi_uuid'])
+            session.call_xenapi('VDI.add_to_other_config',
+                                vdi_ref, "image-id", str(image))
+            session.call_xenapi('VDI.set_name_label',
+                                vdi_ref, "Cached glance image")
+
+            for vdi in vdis:
+                if vdi["vdi_type"] == "swap":
+                    session.call_xenapi('VDI.add_to_other_config',
+                                        vdi_ref, "swap-disk",
+                                        str(vdi['vdi_uuid']))
+
+        if FLAGS.use_cow_images and sr_type == 'ext':
+            new_vdi_ref = cls.clone_vdi(session, vdi_ref)
+        else:
+            new_vdi_ref = cls.copy_vdi(session, sr_ref, vdi_ref)
+
+        # Set the name label for the image we just created and remove image id
+        # field from other-config.
+        session.call_xenapi('VDI.set_name_label', new_vdi_ref, instance.name)
+        session.call_xenapi('VDI.remove_from_other_config',
+                            new_vdi_ref, "image-id")
+
+        vdi_return_list.append(dict(
+            vdi_type=("os" if image_type == ImageType.DISK_VHD
+                      else ImageType.to_string(image_type)),
+            vdi_uuid=session.call_xenapi('VDI.get_uuid', new_vdi_ref),
+            file=None))
+
+        # Create a swap disk if the glance image had one associated with it.
+        vdi_rec = session.call_xenapi('VDI.get_record', vdi_ref)
+        if 'swap-disk' in vdi_rec['other_config']:
+            swap_disk_uuid = vdi_rec['other_config']['swap-disk']
+            swap_vdi_ref = session.call_xenapi('VDI.get_by_uuid',
+                                               swap_disk_uuid)
+            new_swap_vdi_ref = cls.copy_vdi(session, sr_ref, swap_vdi_ref)
+            new_swap_vdi_uuid = session.call_xenapi('VDI.get_uuid',
+                                                    new_swap_vdi_ref)
+            session.call_xenapi('VDI.set_name_label', new_swap_vdi_ref,
+                                instance.name + "-swap")
+            vdi_return_list.append(dict(vdi_type="swap",
+                vdi_uuid=new_swap_vdi_uuid,
+                file=None))
+
+        return vdi_return_list
+
+    @classmethod
+    def fetch_image(cls, context, session, instance, image, _user_id,
+                    _project_id, image_type):
         """Fetch image from glance based on image type.
 
         Returns: A single filename if image_type is KERNEL or RAMDISK
@@ -558,45 +687,67 @@ class VMHelper(HelperBase):
                 session, instance, image, image_type)
 
     @classmethod
-    def _fetch_image_glance_vhd(cls, context, session, instance, image,
-                                image_type):
-        """Tell glance to download an image and put the VHDs into the SR
-
-        Returns: A list of dictionaries that describe VDIs
-        """
-        instance_id = instance.id
-        LOG.debug(_("Asking xapi to fetch vhd image %(image)s")
-                    % locals())
-        sr_ref = cls.safe_find_sr(session)
-
+    def _retry_glance_download_vhd(cls, context, session, image):
         # NOTE(sirp): The Glance plugin runs under Python 2.4
         # which does not have the `uuid` module. To work around this,
         # we generate the uuids here (under Python 2.6+) and
         # pass them as arguments
-        uuid_stack = [str(uuid.uuid4()) for i in xrange(2)]
+        uuid_stack = [str(uuid.uuid4()) for i in xrange(3)]
 
-        glance_host, glance_port = glance.pick_glance_api_server()
-        params = {'image_id': image,
-                  'glance_host': glance_host,
-                  'glance_port': glance_port,
-                  'uuid_stack': uuid_stack,
-                  'sr_path': cls.get_sr_path(session),
-                  'num_retries': FLAGS.glance_num_retries,
-                  'auth_token': getattr(context, 'auth_token', None)}
+        max_attempts = FLAGS.glance_num_retries + 1
+        sleep_time = 0.5
+        for attempt_num in xrange(1, max_attempts + 1):
+            glance_host, glance_port = glance.pick_glance_api_server()
+            params = {'image_id': image,
+                      'glance_host': glance_host,
+                      'glance_port': glance_port,
+                      'uuid_stack': uuid_stack,
+                      'sr_path': cls.get_sr_path(session),
+                      'num_retries': 0,
+                      'auth_token': getattr(context, 'auth_token', None)}
+            kwargs = {'params': pickle.dumps(params)}
 
-        kwargs = {'params': pickle.dumps(params)}
-        task = session.async_call_plugin('glance', 'download_vhd', kwargs)
-        result = session.wait_for_task(task, instance['uuid'])
-        # 'download_vhd' will return a json encoded string containing
-        # a list of dictionaries describing VDIs.  The dictionary will
-        # contain 'vdi_type' and 'vdi_uuid' keys.  'vdi_type' can be
-        # 'os' or 'swap' right now.
-        vdis = json.loads(result)
+            LOG.info(_('download_vhd %(image)s '
+                       'attempt %(attempt_num)d/%(max_attempts)d '
+                       'from %(glance_host)s:%(glance_port)s') % locals())
+
+            try:
+                result = session.call_plugin('glance', 'download_vhd', kwargs)
+                return json.loads(result)
+            except cls.XenAPI.Failure as exc:
+                _type, _method, error = exc.details[:3]
+                if error == 'RetryableError':
+                    LOG.error(_('download_vhd failed: %r') %
+                              (exc.details[3:],))
+                else:
+                    raise
+
+            time.sleep(sleep_time)
+            sleep_time = min(2 * sleep_time, 15)
+
+        raise exception.CouldNotFetchImage(image=image)
+
+    @classmethod
+    def _fetch_image_glance_vhd(cls, context, session, instance, image,
+                                _image_type):
+        """Tell glance to download an image and put the VHDs into the SR
+
+        Returns: A list of dictionaries that describe VDIs
+        """
+        LOG.debug(_("Asking xapi to fetch vhd image %(image)s")
+                    % locals())
+        sr_ref = cls.safe_find_sr(session)
+
+        vdis = cls._retry_glance_download_vhd(context, session, image)
+
+        # 'download_vhd' will return a list of dictionaries describing VDIs.
+        # The dictionary will contain 'vdi_type' and 'vdi_uuid' keys.
+        # 'vdi_type' can be 'os' or 'swap' right now.
         for vdi in vdis:
             LOG.debug(_("xapi 'download_vhd' returned VDI of "
-                    "type '%(vdi_type)s' with UUID '%(vdi_uuid)s'" % vdi))
+                    "type '%(vdi_type)s' with UUID '%(vdi_uuid)s'") % vdi)
 
-        cls.scan_sr(session, instance, sr_ref)
+        cls.scan_sr(session, sr_ref)
 
         # Pull out the UUID of the first VDI (which is the os VDI)
         os_vdi_uuid = vdis[0]['vdi_uuid']
@@ -610,7 +761,7 @@ class VMHelper(HelperBase):
         return vdis
 
     @classmethod
-    def _get_vdi_chain_size(cls, context, session, vdi_uuid):
+    def _get_vdi_chain_size(cls, session, vdi_uuid):
         """Compute the total size of a VDI chain, starting with the specified
         VDI UUID.
 
@@ -622,13 +773,13 @@ class VMHelper(HelperBase):
             cur_vdi_uuid = vdi_rec['uuid']
             vdi_size_bytes = int(vdi_rec['physical_utilisation'])
             LOG.debug(_('vdi_uuid=%(cur_vdi_uuid)s vdi_size_bytes='
-                        '%(vdi_size_bytes)d' % locals()))
+                        '%(vdi_size_bytes)d') % locals())
             size_bytes += vdi_size_bytes
         return size_bytes
 
     @classmethod
     def _check_vdi_size(cls, context, session, instance, vdi_uuid):
-        size_bytes = cls._get_vdi_chain_size(context, session, vdi_uuid)
+        size_bytes = cls._get_vdi_chain_size(session, vdi_uuid)
 
         # FIXME(jk0): this was copied directly from compute.manager.py, let's
         # refactor this to a common area
@@ -683,8 +834,8 @@ class VMHelper(HelperBase):
         if image_type == ImageType.DISK:
             # Make room for MBR.
             vdi_size += MBR_SIZE_BYTES
-        elif image_type in (ImageType.KERNEL, ImageType.RAMDISK) and \
-             vdi_size > FLAGS.max_kernel_ramdisk_size:
+        elif (image_type in (ImageType.KERNEL, ImageType.RAMDISK) and
+              vdi_size > FLAGS.max_kernel_ramdisk_size):
             max_size = FLAGS.max_kernel_ramdisk_size
             raise exception.Error(
                 _("Kernel/Ramdisk image is too large: %(vdi_size)d bytes, "
@@ -708,12 +859,15 @@ class VMHelper(HelperBase):
                 fn = "copy_kernel_vdi"
                 args = {}
                 args['vdi-ref'] = vdi_ref
+
                 # Let the plugin copy the correct number of bytes.
                 args['image-size'] = str(vdi_size)
-                task = session.async_call_plugin('glance', fn, args)
-                filename = session.wait_for_task(task, instance['uuid'])
+                if FLAGS.cache_images:
+                    args['cached-image'] = image
+                filename = session.call_plugin('glance', fn, args)
+
                 # Remove the VDI as it is not needed anymore.
-                session.call_xenapi("VDI.destroy", vdi_ref)
+                cls.destroy_vdi(session, vdi_ref)
                 LOG.debug(_("Kernel/Ramdisk VDI %s destroyed"), vdi_ref)
                 return [dict(vdi_type=ImageType.to_string(image_type),
                              vdi_uuid=None,
@@ -725,7 +879,7 @@ class VMHelper(HelperBase):
         except (cls.XenAPI.Failure, IOError, OSError) as e:
             # We look for XenAPI and OS failures.
             LOG.exception(_("instance %s: Failed to fetch glance image"),
-                          instance_id, exc_info=sys.exc_info())
+                          instance_id)
             e.args = e.args + ([dict(vdi_type=ImageType.
                                               to_string(image_type),
                                     vdi_uuid=vdi_uuid,
@@ -769,8 +923,7 @@ class VMHelper(HelperBase):
         return image_type
 
     @classmethod
-    def determine_is_pv(cls, session, instance_id, vdi_ref, disk_image_type,
-                        os_type):
+    def determine_is_pv(cls, session, vdi_ref, disk_image_type, os_type):
         """
         Determine whether the VM will use a paravirtualized kernel or if it
         will use hardware virtualization.
@@ -815,7 +968,8 @@ class VMHelper(HelperBase):
     @classmethod
     def list_vms(cls, session):
         for vm_ref, vm_rec in cls.get_all_refs_and_recs(session, 'VM'):
-            if vm_rec["is_a_template"] or vm_rec["is_control_domain"]:
+            if (vm_rec["resident_on"] != session.get_xenapi_host() or
+                vm_rec["is_a_template"] or vm_rec["is_control_domain"]):
                 continue
             else:
                 yield vm_ref, vm_rec
@@ -902,17 +1056,12 @@ class VMHelper(HelperBase):
                 'cpu_time': 0}
 
     @classmethod
-    def compile_diagnostics(cls, session, record):
+    def compile_diagnostics(cls, record):
         """Compile VM diagnostics data"""
         try:
-            host = session.get_xenapi_host()
-            host_ip = session.call_xenapi("host.get_record", host)["address"]
-        except (cls.XenAPI.Failure, KeyError) as e:
-            return {"Unable to retrieve diagnostics": e}
-
-        try:
             diags = {}
-            xml = get_rrd(host_ip, record["uuid"])
+            vm_uuid = record["uuid"]
+            xml = get_rrd(get_rrd_server(), vm_uuid)
             if xml:
                 rrd = minidom.parseString(xml)
                 for i, node in enumerate(rrd.firstChild.childNodes):
@@ -921,24 +1070,20 @@ class VMHelper(HelperBase):
                         ref = node.childNodes
                         # Name and Value
                         if len(ref) > 6:
-                            diags[ref[0].firstChild.data] = \
-                                ref[6].firstChild.data
+                            _ref_zero = ref[0].firstChild.data
+                            diags[_ref_zero] = ref[6].firstChild.data
             return diags
-        except cls.XenAPI.Failure as e:
+        except expat.ExpatError as e:
+            LOG.exception(_('Unable to parse rrd of %(vm_uuid)s') % locals())
             return {"Unable to retrieve diagnostics": e}
 
     @classmethod
-    def compile_metrics(cls, session, start_time, stop_time=None):
+    def compile_metrics(cls, start_time, stop_time=None):
         """Compile bandwidth usage, cpu, and disk metrics for all VMs on
            this host"""
         start_time = int(start_time)
-        try:
-            host = session.get_xenapi_host()
-            host_ip = session.call_xenapi("host.get_record", host)["address"]
-        except (cls.XenAPI.Failure, KeyError) as e:
-            raise exception.CouldNotFetchMetrics()
 
-        xml = get_rrd_updates(host_ip, start_time)
+        xml = get_rrd_updates(get_rrd_server(), start_time)
         if xml:
             doc = minidom.parseString(xml)
             return parse_rrd_update(doc, start_time, stop_time)
@@ -946,19 +1091,16 @@ class VMHelper(HelperBase):
         raise exception.CouldNotFetchMetrics()
 
     @classmethod
-    def scan_sr(cls, session, instance=None, sr_ref=None):
+    def scan_sr(cls, session, sr_ref=None):
         """Scans the SR specified by sr_ref"""
         if sr_ref:
             LOG.debug(_("Re-scanning SR %s"), sr_ref)
-            task = session.call_xenapi('Async.SR.scan', sr_ref)
-            instance_uuid = instance['uuid'] if instance else None
-            session.wait_for_task(task, instance_uuid)
+            session.call_xenapi('SR.scan', sr_ref)
 
     @classmethod
     def scan_default_sr(cls, session):
         """Looks for the system default SR and triggers a re-scan"""
-        sr_ref = cls.find_sr(session)
-        session.call_xenapi('SR.scan', sr_ref)
+        cls.scan_sr(session, cls.find_sr(session))
 
     @classmethod
     def safe_find_sr(cls, session):
@@ -1047,29 +1189,41 @@ class VMHelper(HelperBase):
         return None
 
 
-def get_rrd(host, vm_uuid):
+def get_rrd_server():
+    """Return server's scheme and address to use for retrieving RRD XMLs."""
+    xs_url = urlparse.urlparse(FLAGS.xenapi_connection_url)
+    return [xs_url.scheme, xs_url.netloc]
+
+
+def get_rrd(server, vm_uuid):
     """Return the VM RRD XML as a string"""
     try:
-        xml = urllib.urlopen("http://%s:%s@%s/vm_rrd?uuid=%s" % (
+        xml = urllib.urlopen("%s://%s:%s@%s/vm_rrd?uuid=%s" % (
+            server[0],
             FLAGS.xenapi_connection_username,
             FLAGS.xenapi_connection_password,
-            host,
+            server[1],
             vm_uuid))
         return xml.read()
     except IOError:
+        LOG.exception(_('Unable to obtain RRD XML for VM %(vm_uuid)s with '
+                        'server details: %(server)s.') % locals())
         return None
 
 
-def get_rrd_updates(host, start_time):
+def get_rrd_updates(server, start_time):
     """Return the RRD updates XML as a string"""
     try:
-        xml = urllib.urlopen("http://%s:%s@%s/rrd_updates?start=%s" % (
+        xml = urllib.urlopen("%s://%s:%s@%s/rrd_updates?start=%s" % (
+            server[0],
             FLAGS.xenapi_connection_username,
             FLAGS.xenapi_connection_password,
-            host,
+            server[1],
             start_time))
         return xml.read()
     except IOError:
+        LOG.exception(_('Unable to obtain RRD XML updates with '
+                        'server details: %(server)s.') % locals())
         return None
 
 
@@ -1087,7 +1241,7 @@ def parse_rrd_data(doc):
     dnode = doc.getElementsByTagName('data')[0]
     return [dict(
             time=int(child.getElementsByTagName('t')[0].firstChild.data),
-            values=[Decimal(valnode.firstChild.data)
+            values=[decimal.Decimal(valnode.firstChild.data)
                   for valnode in child.getElementsByTagName('v')])
             for child in dnode.childNodes]
 
@@ -1097,24 +1251,24 @@ def parse_rrd_update(doc, start, until=None):
     meta = parse_rrd_meta(doc)
     data = parse_rrd_data(doc)
     for col, collabel in enumerate(meta['legend']):
-        datatype, objtype, uuid, name = collabel.split(':')
+        _datatype, _objtype, uuid, name = collabel.split(':')
         vm_data = sum_data.get(uuid, dict())
         if name.startswith('vif'):
             vm_data[name] = integrate_series(data, col, start, until)
         else:
-            vm_data[name] = average_series(data, col, start, until)
+            vm_data[name] = average_series(data, col, until)
         sum_data[uuid] = vm_data
     return sum_data
 
 
-def average_series(data, col, start, until=None):
+def average_series(data, col, until=None):
     vals = [row['values'][col] for row in data
             if (not until or (row['time'] <= until)) and
                 row['values'][col].is_finite()]
     if vals:
         try:
-            return (sum(vals) / len(vals)).quantize(Decimal('1.0000'))
-        except InvalidOperation:
+            return (sum(vals) / len(vals)).quantize(decimal.Decimal('1.0000'))
+        except decimal.InvalidOperation:
             # (mdragon) Xenserver occasionally returns odd values in
             # data that will throw an error on averaging (see bug 918490)
             # These are hard to find, since, whatever those values are,
@@ -1124,13 +1278,13 @@ def average_series(data, col, start, until=None):
             # other statistics.
             LOG.error(_("Invalid statistics data from Xenserver: %s")
                       % str(vals))
-            return Decimal('NaN')
+            return decimal.Decimal('NaN')
     else:
-        return Decimal('0.0000')
+        return decimal.Decimal('0.0000')
 
 
 def integrate_series(data, col, start, until=None):
-    total = Decimal('0.0000')
+    total = decimal.Decimal('0.0000')
     prev_time = int(start)
     prev_val = None
     for row in reversed(data):
@@ -1138,20 +1292,29 @@ def integrate_series(data, col, start, until=None):
             time = row['time']
             val = row['values'][col]
             if val.is_nan():
-                val = Decimal('0.0000')
+                val = decimal.Decimal('0.0000')
             if prev_val is None:
                 prev_val = val
             if prev_val >= val:
                 total += ((val * (time - prev_time)) +
-                          (Decimal('0.5000') * (prev_val - val) *
+                          (decimal.Decimal('0.5000') * (prev_val - val) *
                           (time - prev_time)))
             else:
                 total += ((prev_val * (time - prev_time)) +
-                          (Decimal('0.5000') * (val - prev_val) *
+                          (decimal.Decimal('0.5000') * (val - prev_val) *
                           (time - prev_time)))
             prev_time = time
             prev_val = val
-    return total.quantize(Decimal('1.0000'))
+    return total.quantize(decimal.Decimal('1.0000'))
+
+
+def _get_all_vdis_in_sr(session, sr_ref):
+    for vdi_ref in session.call_xenapi('SR.get_VDIs', sr_ref):
+        try:
+            vdi_rec = session.call_xenapi('VDI.get_record', vdi_ref)
+            yield vdi_ref, vdi_rec
+        except VMHelper.XenAPI.Failure:
+            continue
 
 
 #TODO(sirp): This code comes from XS5.6 pluginlib.py, we should refactor to
@@ -1176,7 +1339,7 @@ def get_vhd_parent_uuid(session, vdi_ref):
     vdi_rec = session.call_xenapi("VDI.get_record", vdi_ref)
     ret = get_vhd_parent(session, vdi_rec)
     if ret:
-        parent_ref, parent_rec = ret
+        _parent_ref, parent_rec = ret
         return parent_rec["uuid"]
     else:
         return None
@@ -1206,35 +1369,53 @@ def _wait_for_vhd_coalesce(session, instance, sr_ref, vdi_ref,
             * parent_vhd
                 snapshot
 
-    Atter coalesce:
+    After coalesce:
         * parent_vhd
             snapshot
     """
+    def _another_child_vhd():
+        if not original_parent_uuid:
+            return False
+
+        # Search for any other vdi which parents to original parent and is not
+        # in the active vm/instance vdi chain.
+        vdi_uuid = session.call_xenapi('VDI.get_record', vdi_ref)['uuid']
+        parent_vdi_uuid = get_vhd_parent_uuid(session, vdi_ref)
+        for _ref, rec in _get_all_vdis_in_sr(session, sr_ref):
+            if ((rec['uuid'] != vdi_uuid) and
+               (rec['uuid'] != parent_vdi_uuid) and
+               (rec['sm_config'].get('vhd-parent') == original_parent_uuid)):
+                # Found another vhd which too parents to original parent.
+                return True
+        # Found no other vdi with the same parent.
+        return False
+
+    # Check if original parent has any other child. If so, coalesce will
+    # not take place.
+    if _another_child_vhd():
+        parent_uuid = get_vhd_parent_uuid(session, vdi_ref)
+        parent_ref = session.call_xenapi("VDI.get_by_uuid", parent_uuid)
+        base_uuid = get_vhd_parent_uuid(session, parent_ref)
+        return parent_uuid, base_uuid
+
     max_attempts = FLAGS.xenapi_vhd_coalesce_max_attempts
-    attempts = {'counter': 0}
-
-    def _poll_vhds():
-        attempts['counter'] += 1
-        if attempts['counter'] > max_attempts:
-            counter = attempts['counter']
-            msg = (_("VHD coalesce attempts exceeded (%(counter)d >"
-                    " %(max_attempts)d), giving up...") % locals())
-            raise exception.Error(msg)
-
-        VMHelper.scan_sr(session, instance, sr_ref)
+    for i in xrange(max_attempts):
+        VMHelper.scan_sr(session, sr_ref)
         parent_uuid = get_vhd_parent_uuid(session, vdi_ref)
         if original_parent_uuid and (parent_uuid != original_parent_uuid):
             LOG.debug(_("Parent %(parent_uuid)s doesn't match original parent"
                     " %(original_parent_uuid)s, waiting for coalesce...")
                     % locals())
         else:
-            # Breakout of the loop (normally) and return the parent_uuid
-            raise utils.LoopingCallDone(parent_uuid)
+            parent_ref = session.call_xenapi("VDI.get_by_uuid", parent_uuid)
+            base_uuid = get_vhd_parent_uuid(session, parent_ref)
+            return parent_uuid, base_uuid
 
-    loop = utils.LoopingCall(_poll_vhds)
-    loop.start(FLAGS.xenapi_vhd_coalesce_poll_interval, now=True)
-    parent_uuid = loop.wait()
-    return parent_uuid
+        greenthread.sleep(FLAGS.xenapi_vhd_coalesce_poll_interval)
+
+    msg = (_("VHD coalesce attempts exceeded (%(max_attempts)d)"
+             ", giving up...") % locals())
+    raise exception.Error(msg)
 
 
 def remap_vbd_dev(dev):
@@ -1273,22 +1454,10 @@ def _wait_for_device(dev):
 @contextlib.contextmanager
 def vdi_attached_here(session, vdi_ref, read_only=False):
     this_vm_ref = get_this_vm_ref(session)
-    vbd_rec = {}
-    vbd_rec['VM'] = this_vm_ref
-    vbd_rec['VDI'] = vdi_ref
-    vbd_rec['userdevice'] = 'autodetect'
-    vbd_rec['bootable'] = False
-    vbd_rec['mode'] = read_only and 'RO' or 'RW'
-    vbd_rec['type'] = 'disk'
-    vbd_rec['unpluggable'] = True
-    vbd_rec['empty'] = False
-    vbd_rec['other_config'] = {}
-    vbd_rec['qos_algorithm_type'] = ''
-    vbd_rec['qos_algorithm_params'] = {}
-    vbd_rec['qos_supported_algorithms'] = []
-    LOG.debug(_('Creating VBD for VDI %s ... '), vdi_ref)
-    vbd_ref = session.call_xenapi("VBD.create", vbd_rec)
-    LOG.debug(_('Creating VBD for VDI %s done.'), vdi_ref)
+
+    vbd_ref = VMHelper.create_vbd(session, this_vm_ref, vdi_ref,
+                                  'autodetect', read_only=read_only,
+                                  bootable=False)
     try:
         LOG.debug(_('Plugging VBD %s ... '), vbd_ref)
         session.call_xenapi("VBD.plug", vbd_ref)
@@ -1310,7 +1479,11 @@ def vdi_attached_here(session, vdi_ref, read_only=False):
             LOG.debug(_('Destroying VBD for VDI %s ... '), vdi_ref)
             vbd_unplug_with_retry(session, vbd_ref)
     finally:
-        ignore_failure(session.call_xenapi, "VBD.destroy", vbd_ref)
+        try:
+            VMHelper.destroy_vbd(session, vbd_ref)
+        except volume_utils.StorageError:
+            # destroy_vbd() will log error
+            pass
         LOG.debug(_('Destroying VBD for VDI %s done.'), vdi_ref)
 
 
@@ -1319,17 +1492,16 @@ def vbd_unplug_with_retry(session, vbd_ref):
     DEVICE_DETACH_REJECTED.  For reasons which I don't understand, we're
     seeing the device still in use, even when all processes using the device
     should be dead."""
-    # FIXME(sirp): We can use LoopingCall here w/o blocking sleep()
     while True:
         try:
-            session.call_xenapi("VBD.unplug", vbd_ref)
+            VMHelper.unplug_vbd(session, vbd_ref)
             LOG.debug(_('VBD.unplug successful first time.'))
             return
         except VMHelper.XenAPI.Failure, e:
             if (len(e.details) > 0 and
                 e.details[0] == 'DEVICE_DETACH_REJECTED'):
                 LOG.debug(_('VBD.unplug rejected: retrying...'))
-                time.sleep(1)
+                greenthread.sleep(1)
                 LOG.debug(_('Not sleeping anymore!'))
             elif (len(e.details) > 0 and
                   e.details[0] == 'DEVICE_ALREADY_DETACHED'):
@@ -1339,14 +1511,6 @@ def vbd_unplug_with_retry(session, vbd_ref):
                 LOG.error(_('Ignoring XenAPI.Failure in VBD.unplug: %s'),
                               e)
                 return
-
-
-def ignore_failure(func, *args, **kwargs):
-    try:
-        return func(*args, **kwargs)
-    except VMHelper.XenAPI.Failure, e:
-        LOG.error(_('Ignoring XenAPI.Failure %s'), e)
-        return None
 
 
 def get_this_vm_uuid():
@@ -1375,7 +1539,7 @@ def _is_vdi_pv(dev):
 def _get_partitions(dev):
     """Return partition information (num, size, type) for a device."""
     dev_path = utils.make_dev_path(dev)
-    out, err = utils.execute('parted', '--script', '--machine',
+    out, _err = utils.execute('parted', '--script', '--machine',
                              dev_path, 'unit s', 'print',
                              run_as_root=True)
     lines = [line for line in out.split('\n') if line]
@@ -1400,12 +1564,12 @@ def _stream_disk(dev, image_type, virtual_size, image_file):
         _write_partition(virtual_size, dev)
 
     dev_path = utils.make_dev_path(dev)
-    utils.execute('chown', os.getuid(), dev_path, run_as_root=True)
 
-    with open(dev_path, 'wb') as f:
-        f.seek(offset)
-        for chunk in image_file:
-            f.write(chunk)
+    with utils.temporary_chown(dev_path):
+        with open(dev_path, 'wb') as f:
+            f.seek(offset)
+            for chunk in image_file:
+                f.write(chunk)
 
 
 def _write_partition(virtual_size, dev):
@@ -1441,19 +1605,15 @@ def _resize_part_and_fs(dev, start, old_sectors, new_sectors):
     dev_path = utils.make_dev_path(dev)
     partition_path = utils.make_dev_path(dev, partition=1)
 
+    # Replay journal if FS wasn't cleanly unmounted
+    # Exit Code 1 = File system errors corrected
+    #           2 = File system errors corrected, system needs a reboot
+    utils.execute('e2fsck', '-f', '-y', partition_path, run_as_root=True,
+                  check_exit_code=[0, 1, 2])
+
     # Remove ext3 journal (making it ext2)
     utils.execute('tune2fs', '-O ^has_journal', partition_path,
                   run_as_root=True)
-
-    # fsck the disk
-    #
-    # NOTE(sirp): using -p here to automatically repair filesystem, is
-    # this okay?
-    #
-    # Exit Code 1 = File system errors corrected
-    #           2 = File system errors corrected, system needs a reboot
-    utils.execute('e2fsck', '-f', '-p', partition_path, run_as_root=True,
-                  check_exit_code=[0, 1, 2])
 
     if new_sectors < old_sectors:
         # Resizing down, resize filesystem before partition resize
@@ -1476,6 +1636,50 @@ def _resize_part_and_fs(dev, start, old_sectors, new_sectors):
     utils.execute('tune2fs', '-j', partition_path, run_as_root=True)
 
 
+def _sparse_copy(src_path, dst_path, virtual_size, block_size=4096):
+    """Copy data, skipping long runs of zeros to create a sparse file."""
+    start_time = time.time()
+    EMPTY_BLOCK = '\0' * block_size
+    bytes_read = 0
+    skipped_bytes = 0
+    left = virtual_size
+
+    LOG.debug(_("Starting sparse_copy src=%(src_path)s dst=%(dst_path)s "
+                "virtual_size=%(virtual_size)d block_size=%(block_size)d"),
+                locals())
+
+    # NOTE(sirp): we need read/write access to the devices; since we don't have
+    # the luxury of shelling out to a sudo'd command, we temporarily take
+    # ownership of the devices.
+    with utils.temporary_chown(src_path):
+        with utils.temporary_chown(dst_path):
+            with open(src_path, "r") as src:
+                with open(dst_path, "w") as dst:
+                    data = src.read(min(block_size, left))
+                    while data:
+                        if data == EMPTY_BLOCK:
+                            dst.seek(block_size, os.SEEK_CUR)
+                            left -= block_size
+                            bytes_read += block_size
+                            skipped_bytes += block_size
+                        else:
+                            dst.write(data)
+                            data_len = len(data)
+                            left -= data_len
+                            bytes_read += data_len
+
+                        if left <= 0:
+                            break
+
+                        data = src.read(min(block_size, left))
+
+    duration = time.time() - start_time
+    compression_pct = float(skipped_bytes) / bytes_read * 100
+
+    LOG.debug(_("Finished sparse_copy in %(duration).2f secs, "
+                "%(compression_pct).2f%% reduction in size"), locals())
+
+
 def _copy_partition(session, src_ref, dst_ref, partition, virtual_size):
     # Part of disk taken up by MBR
     virtual_size -= MBR_SIZE_BYTES
@@ -1488,18 +1692,21 @@ def _copy_partition(session, src_ref, dst_ref, partition, virtual_size):
 
             _write_partition(virtual_size, dst)
 
-            num_blocks = virtual_size / SECTOR_SIZE
-            utils.execute('dd',
-                          'if=%s' % src_path,
-                          'of=%s' % dst_path,
-                          'count=%d' % num_blocks,
-                          run_as_root=True)
+            if FLAGS.xenapi_sparse_copy:
+                _sparse_copy(src_path, dst_path, virtual_size)
+            else:
+                num_blocks = virtual_size / SECTOR_SIZE
+                utils.execute('dd',
+                              'if=%s' % src_path,
+                              'of=%s' % dst_path,
+                              'count=%d' % num_blocks,
+                              run_as_root=True)
 
 
 def _mount_filesystem(dev_path, dir):
     """mounts the device specified by dev_path in dir"""
     try:
-        out, err = utils.execute('mount',
+        _out, err = utils.execute('mount',
                                  '-t', 'ext2,ext3,ext4,reiserfs',
                                  dev_path, dir, run_as_root=True)
     except exception.ProcessExecutionError as e:
@@ -1540,8 +1747,7 @@ def _mounted_processing(device, key, net, metadata):
     """Callback which runs with the image VDI attached"""
     # NB: Partition 1 hardcoded
     dev_path = utils.make_dev_path(device, partition=1)
-    tmpdir = tempfile.mkdtemp()
-    try:
+    with utils.tempdir() as tmpdir:
         # Mount only Linux filesystems, to avoid disturbing NTFS images
         err = _mount_filesystem(dev_path, tmpdir)
         if not err:
@@ -1550,16 +1756,16 @@ def _mounted_processing(device, key, net, metadata):
                 if not _find_guest_agent(tmpdir, FLAGS.xenapi_agent_path):
                     LOG.info(_('Manipulating interface files '
                             'directly'))
-                    disk.inject_data_into_fs(tmpdir, key, net, metadata,
-                        utils.execute)
+                    # for xenapi, we don't 'inject' admin_password here,
+                    # it's handled at instance startup time
+                    disk.inject_data_into_fs(tmpdir,
+                                             key, net, None, metadata,
+                                             utils.execute)
             finally:
                 utils.execute('umount', dev_path, run_as_root=True)
         else:
             LOG.info(_('Failed to mount filesystem (expected for '
                 'non-linux instances): %s') % err)
-    finally:
-        # remove temporary directory
-        os.rmdir(tmpdir)
 
 
 def _prepare_injectables(inst, networks_info):

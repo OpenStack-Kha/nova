@@ -24,19 +24,15 @@ from nova import flags
 from nova import log as logging
 from nova import test
 from nova.compute import instance_types
-from nova.db.sqlalchemy.session import get_session
 from nova.db.sqlalchemy import models
+from nova.db.sqlalchemy import session as sql_session
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger('nova.tests.compute')
+LOG = logging.getLogger(__name__)
 
 
 class InstanceTypeTestCase(test.TestCase):
     """Test cases for instance type code"""
-    def setUp(self):
-        super(InstanceTypeTestCase, self).setUp()
-        session = get_session()
-
     def _generate_name(self):
         """return a name not in the DB"""
         nonexistent_flavor = str(int(time.time()))
@@ -49,8 +45,8 @@ class InstanceTypeTestCase(test.TestCase):
     def _generate_flavorid(self):
         """return a flavorid not in the DB"""
         nonexistent_flavor = 2700
-        flavor_ids = [value["id"] for key, value in\
-                    instance_types.get_all_types().iteritems()]
+        flavor_ids = [value["id"] for key, value in
+                      instance_types.get_all_types().iteritems()]
         while nonexistent_flavor in flavor_ids:
             nonexistent_flavor += 1
         else:
@@ -84,24 +80,17 @@ class InstanceTypeTestCase(test.TestCase):
         self.assertNotEqual(len(original_list), len(new_list),
                             'instance type was not created')
 
-        # destroy instance and make sure deleted flag is set to True
         instance_types.destroy(name)
-        inst_type = instance_types.get_instance_type(inst_type_id)
-        self.assertEqual(1, inst_type["deleted"])
+        self.assertRaises(exception.InstanceTypeNotFound,
+                          instance_types.get_instance_type, inst_type_id)
 
         # deleted instance should not be in list anymoer
         new_list = instance_types.get_all_types()
         self.assertEqual(original_list, new_list)
 
-        # ensure instances are gone after purge
-        instance_types.purge(name)
-        new_list = instance_types.get_all_types()
-        self.assertEqual(original_list, new_list,
-                         'instance type not purged')
-
     def test_get_all_instance_types(self):
         """Ensures that all instance types can be retrieved"""
-        session = get_session()
+        session = sql_session.get_session()
         total_instance_types = session.query(models.InstanceTypes).count()
         inst_types = instance_types.get_all_types()
         self.assertEqual(total_instance_types, len(inst_types))
@@ -140,18 +129,18 @@ class InstanceTypeTestCase(test.TestCase):
                           'unknown_flavor')
 
     def test_duplicate_names_fail(self):
-        """Ensures that name duplicates raise ApiError"""
+        """Ensures that name duplicates raise InstanceTypeCreateFailed"""
         name = 'some_name'
         instance_types.create(name, 256, 1, 120, 200, 'flavor1')
-        self.assertRaises(exception.ApiError,
+        self.assertRaises(exception.InstanceTypeExists,
                           instance_types.create,
-                          name, "256", 1, 120, 200, 'flavor2')
+                          name, 256, 1, 120, 200, 'flavor2')
 
     def test_duplicate_flavorids_fail(self):
-        """Ensures that flavorid duplicates raise ApiError"""
+        """Ensures that flavorid duplicates raise InstanceTypeCreateFailed"""
         flavorid = 'flavor1'
         instance_types.create('name one', 256, 1, 120, 200, flavorid)
-        self.assertRaises(exception.ApiError,
+        self.assertRaises(exception.InstanceTypeExists,
                           instance_types.create,
                           'name two', 256, 1, 120, 200, flavorid)
 
@@ -160,21 +149,10 @@ class InstanceTypeTestCase(test.TestCase):
         self.assertRaises(exception.InstanceTypeNotFoundByName,
                           instance_types.destroy, None)
 
-    def test_will_not_purge_without_name(self):
-        """Ensure purge without a name raises error"""
-        self.assertRaises(exception.InstanceTypeNotFoundByName,
-                          instance_types.purge, None)
-
-    def test_will_not_purge_with_wrong_name(self):
-        """Ensure purge without correct name raises error"""
-        self.assertRaises(exception.InstanceTypeNotFound,
-                          instance_types.purge,
-                          'unknown_flavor')
-
     def test_will_not_get_bad_default_instance_type(self):
         """ensures error raised on bad default instance type"""
-        FLAGS.default_instance_type = 'unknown_flavor'
-        self.assertRaises(exception.ApiError,
+        self.flags(default_instance_type='unknown_flavor')
+        self.assertRaises(exception.InstanceTypeNotFound,
                           instance_types.get_default_instance_type)
 
     def test_will_get_instance_type_by_id(self):
@@ -185,12 +163,12 @@ class InstanceTypeTestCase(test.TestCase):
 
     def test_will_not_get_instance_type_by_unknown_id(self):
         """Ensure get by name returns default flavor with no name"""
-        self.assertRaises(exception.ApiError,
+        self.assertRaises(exception.InstanceTypeNotFound,
                          instance_types.get_instance_type, 10000)
 
     def test_will_not_get_instance_type_with_bad_id(self):
         """Ensure get by name returns default flavor with bad name"""
-        self.assertRaises(exception.ApiError,
+        self.assertRaises(exception.InstanceTypeNotFound,
                           instance_types.get_instance_type, 'asdf')
 
     def test_instance_type_get_by_None_name_returns_default(self):
@@ -201,7 +179,7 @@ class InstanceTypeTestCase(test.TestCase):
 
     def test_will_not_get_instance_type_with_bad_name(self):
         """Ensure get by name returns default flavor with bad name"""
-        self.assertRaises(exception.ApiError,
+        self.assertRaises(exception.InstanceTypeNotFound,
                           instance_types.get_instance_type_by_name, 10000)
 
     def test_will_not_get_instance_by_unknown_flavor_id(self):

@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2010 Openstack, LLC.
+# Copyright (c) 2010 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -37,11 +37,12 @@ console_manager_opts = [
                 help='Stub calls to compute worker for tests'),
     cfg.StrOpt('console_public_hostname',
                default=socket.gethostname(),
-               help='Publicly visable name for this console host'),
+               help='Publicly visible name for this console host'),
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(console_manager_opts)
+FLAGS.register_opts(console_manager_opts)
+LOG = logging.getLogger(__name__)
 
 
 class ConsoleProxyManager(manager.Manager):
@@ -73,7 +74,7 @@ class ConsoleProxyManager(manager.Manager):
                                                       pool['id'],
                                                       instance_id)
         except exception.NotFound:
-            logging.debug(_('Adding console'))
+            LOG.debug(_('Adding console'))
             if not password:
                 password = utils.generate_password(8)
             if not port:
@@ -93,7 +94,7 @@ class ConsoleProxyManager(manager.Manager):
         try:
             console = self.db.console_get(context, console_id)
         except exception.NotFound:
-            logging.debug(_('Tried to remove non-existant console '
+            LOG.debug(_('Tried to remove non-existant console '
                             '%(console_id)s.') %
                             {'console_id': console_id})
             return

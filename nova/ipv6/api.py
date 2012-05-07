@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2011 Openstack, LLC.
+# Copyright (c) 2011 OpenStack, LLC.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -19,18 +19,17 @@ from nova.openstack.common import cfg
 from nova import utils
 
 
-ipv6_backend_opt = \
-    cfg.StrOpt('ipv6_backend',
-               default='rfc2462',
-               help='Backend to use for IPv6 generation')
+ipv6_backend_opt = cfg.StrOpt('ipv6_backend',
+                              default='rfc2462',
+                              help='Backend to use for IPv6 generation')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(ipv6_backend_opt)
+FLAGS.register_opt(ipv6_backend_opt)
 
 
 def reset_backend():
     global IMPL
-    IMPL = utils.LazyPluggable(FLAGS['ipv6_backend'],
+    IMPL = utils.LazyPluggable('ipv6_backend',
                 rfc2462='nova.ipv6.rfc2462',
                 account_identifier='nova.ipv6.account_identifier')
 

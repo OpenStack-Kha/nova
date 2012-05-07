@@ -16,9 +16,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import functools
 import os
-import routes
 
 import webob.dec
 import webob.exc
@@ -31,10 +29,9 @@ from nova import flags
 from nova import log as logging
 import nova.policy
 from nova import utils
-from nova import wsgi as base_wsgi
 
 
-LOG = logging.getLogger('nova.api.openstack.extensions')
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 
 
@@ -115,7 +112,7 @@ def make_ext(elem):
     xmlutil.make_links(elem, 'links')
 
 
-ext_nsmap = {None: xmlutil.XMLNS_V11, 'atom': xmlutil.XMLNS_ATOM}
+ext_nsmap = {None: xmlutil.XMLNS_COMMON_V10, 'atom': xmlutil.XMLNS_ATOM}
 
 
 class ExtensionTemplate(xmlutil.TemplateBuilder):
@@ -304,7 +301,9 @@ def wrap_errors(fn):
     def wrapped(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except Exception, e:
+        except webob.exc.HTTPException:
+            raise
+        except Exception:
             raise webob.exc.HTTPInternalServerError()
     return wrapped
 
@@ -375,8 +374,9 @@ def load_standard_extensions(ext_mgr, logger, path, package, ext_list=None):
 
 def extension_authorizer(api_name, extension_name):
     def authorize(context, target=None):
-        if target == None:
-            target = {}
+        if target is None:
+            target = {'project_id': context.project_id,
+                      'user_id': context.user_id}
         action = '%s_extension:%s' % (api_name, extension_name)
         nova.policy.enforce(context, action, target)
     return authorize

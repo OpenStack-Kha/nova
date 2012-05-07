@@ -1,4 +1,4 @@
-# Copyright (c) 2011 Openstack, LLC.
+# Copyright (c) 2011 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -29,15 +29,15 @@ from nova import log as logging
 from nova.openstack.common import cfg
 
 
-scheduler_json_config_location_opt = \
-    cfg.StrOpt('scheduler_json_config_location',
-               default='',
-               help='Absolute path to scheduler configuration JSON file.')
+scheduler_json_config_location_opt = cfg.StrOpt(
+        'scheduler_json_config_location',
+        default='',
+        help='Absolute path to scheduler configuration JSON file.')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(scheduler_json_config_location_opt)
+FLAGS.register_opt(scheduler_json_config_location_opt)
 
-LOG = logging.getLogger('nova.scheduler.scheduler_options')
+LOG = logging.getLogger(__name__)
 
 
 class SchedulerOptions(object):
@@ -64,7 +64,7 @@ class SchedulerOptions(object):
             return os.path.getmtime(filename)
         except os.error, e:
             LOG.exception(_("Could not stat scheduler options file "
-                            "%(filename)s: '%(e)s'", locals()))
+                            "%(filename)s: '%(e)s'"), locals())
             raise
 
     def _load_file(self, handle):
@@ -92,8 +92,8 @@ class SchedulerOptions(object):
                 return self.data
 
         last_modified = self._get_file_timestamp(filename)
-        if not last_modified or not self.last_modified or \
-                                        last_modified > self.last_modified:
+        if (not last_modified or not self.last_modified or
+            last_modified > self.last_modified):
             self.data = self._load_file(self._get_file_handle(filename))
             self.last_modified = last_modified
         if not self.data:

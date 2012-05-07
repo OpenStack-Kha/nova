@@ -20,6 +20,7 @@ import webob
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova.api.openstack import extensions
+from nova.db.sqlalchemy import api as sqlalchemy_api
 from nova import db
 from nova import exception
 from nova import quota
@@ -30,7 +31,7 @@ authorize = extensions.extension_authorizer('compute', 'quotas')
 
 quota_resources = ['metadata_items', 'injected_file_content_bytes',
         'volumes', 'gigabytes', 'ram', 'floating_ips', 'instances',
-        'injected_files', 'cores']
+        'injected_files', 'cores', 'security_groups', 'security_group_rules']
 
 
 class QuotaTemplate(xmlutil.TemplateBuilder):
@@ -62,7 +63,7 @@ class QuotaSetsController(object):
         context = req.environ['nova.context']
         authorize(context)
         try:
-            db.sqlalchemy.api.authorize_project_context(context, id)
+            sqlalchemy_api.authorize_project_context(context, id)
             return self._format_quota_set(id,
                                         quota.get_project_quotas(context, id))
         except exception.NotAuthorized:
@@ -84,6 +85,7 @@ class QuotaSetsController(object):
                     raise webob.exc.HTTPForbidden()
         return {'quota_set': quota.get_project_quotas(context, project_id)}
 
+    @wsgi.serializers(xml=QuotaTemplate)
     def defaults(self, req, id):
         authorize(req.environ['nova.context'])
         return self._format_quota_set(id, quota._get_default_quotas())

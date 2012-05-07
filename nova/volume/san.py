@@ -37,11 +37,10 @@ from nova import flags
 from nova import log as logging
 from nova.openstack.common import cfg
 from nova import utils
-from nova.utils import ssh_execute
-from nova.volume.driver import ISCSIDriver
+import nova.volume.driver
 
 
-LOG = logging.getLogger("nova.volume.driver")
+LOG = logging.getLogger(__name__)
 
 san_opts = [
     cfg.BoolOpt('san_thin_provision',
@@ -75,10 +74,10 @@ san_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(san_opts)
+FLAGS.register_opts(san_opts)
 
 
-class SanISCSIDriver(ISCSIDriver):
+class SanISCSIDriver(nova.volume.driver.ISCSIDriver):
     """Base class for SAN-style storage volumes
 
     A SAN-style storage value is 'different' because the volume controller
@@ -127,7 +126,7 @@ class SanISCSIDriver(ISCSIDriver):
         ssh = self._connect_to_ssh()
 
         #TODO(justinsb): Reintroduce the retry hack
-        ret = ssh_execute(ssh, command, check_exit_code=check_exit_code)
+        ret = utils.ssh_execute(ssh, command, check_exit_code=check_exit_code)
 
         ssh.close()
 
@@ -694,7 +693,7 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
                                            cluster_password))[:-1]
             header['Authorization'] = 'Basic %s' % auth_key
 
-        LOG.debug(_("Payload for SolidFire API call: %s" % payload))
+        LOG.debug(_("Payload for SolidFire API call: %s") % payload)
         connection = httplib.HTTPSConnection(host, port)
         connection.request('POST', '/json-rpc/1.0', payload, header)
         response = connection.getresponse()
@@ -702,9 +701,7 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
 
         if response.status != 200:
             connection.close()
-            msg = _("Error in SolidFire API response, status was: %s"
-                    % response.status)
-            raise exception.ApiError(msg)
+            raise exception.SolidFireAPIException(status=response.status)
 
         else:
             data = response.read()
@@ -713,12 +710,12 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
 
             except (TypeError, ValueError), exc:
                 connection.close()
-                msg = _("Call to json.loads() raised an exception: %s" % exc)
+                msg = _("Call to json.loads() raised an exception: %s") % exc
                 raise exception.SfJsonEncodeFailure(msg)
 
             connection.close()
 
-        LOG.debug(_("Results of SolidFire API call: %s" % data))
+        LOG.debug(_("Results of SolidFire API call: %s") % data)
         return data
 
     def _get_volumes_by_sfaccount(self, account_id):
@@ -732,7 +729,7 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
         params = {'username': sf_account_name}
         data = self._issue_api_request('GetAccountByName', params)
         if 'result' in data and 'account' in data['result']:
-            LOG.debug(_('Found solidfire account: %s' % sf_account_name))
+            LOG.debug(_('Found solidfire account: %s') % sf_account_name)
             sfaccount = data['result']['account']
         return sfaccount
 
@@ -746,8 +743,8 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
         sf_account_name = socket.gethostname() + '-' + nova_project_id
         sfaccount = self._get_sfaccount_by_name(sf_account_name)
         if sfaccount is None:
-            LOG.debug(_('solidfire account: %s does not exist, create it...'
-                    % sf_account_name))
+            LOG.debug(_('solidfire account: %s does not exist, create it...')
+                      % sf_account_name)
             chap_secret = self._generate_random_string(12)
             params = {'username': sf_account_name,
                       'initiatorSecret': chap_secret,
@@ -763,9 +760,7 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
         params = {}
         data = self._issue_api_request('GetClusterInfo', params)
         if 'result' not in data:
-            msg = _("Error in SolidFire API response data was: %s"
-                    % data)
-            raise exception.ApiError(msg)
+            raise exception.SolidFireAPIDataException(data=data)
 
         return data['result']
 
@@ -827,14 +822,10 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
                   'attributes': attributes}
 
         data = self._issue_api_request('CreateVolume', params)
-        if 'result' not in data:
-            msg = _("Error in SolidFire API response data was: %s"
-                    % data)
-            raise exception.ApiError(msg)
-        if 'volumeID' not in data['result']:
-            msg = _("Error in SolidFire API response data was: %s"
-                    % data)
-            raise exception.ApiError(msg)
+
+        if 'result' not in data or 'volumeID' not in data['result']:
+            raise exception.SolidFireAPIDataException(data=data)
+
         volume_id = data['result']['volumeID']
 
         volume_list = self._get_volumes_by_sfaccount(account_id)
@@ -845,7 +836,10 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
                 break
 
         model_update = {}
-        model_update['provider_location'] = ('%s %s' % (iscsi_portal, iqn))
+
+        # NOTE(john-griffith): SF volumes are always at lun 0
+        model_update['provider_location'] = ('%s %s %s'
+                % (iscsi_portal, iqn, 0))
         model_update['provider_auth'] = ('CHAP %s %s'
                 % (account_name, chap_secret))
 
@@ -873,9 +867,7 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
         params = {'accountID': sfaccount['accountID']}
         data = self._issue_api_request('ListVolumesForAccount', params)
         if 'result' not in data:
-            msg = _("Error in SolidFire API response, data was: %s"
-                    % data)
-            raise exception.ApiError(msg)
+            raise exception.SolidFireAPIDataException(data=data)
 
         found_count = 0
         volid = -1
@@ -885,15 +877,13 @@ class SolidFireSanISCSIDriver(SanISCSIDriver):
                 volid = v['volumeID']
 
         if found_count != 1:
-            LOG.debug(_("Deleting volumeID: %s " % volid))
+            LOG.debug(_("Deleting volumeID: %s ") % volid)
             raise exception.DuplicateSfVolumeNames(vol_name=volume['name'])
 
         params = {'volumeID': volid}
         data = self._issue_api_request('DeleteVolume', params)
         if 'result' not in data:
-            msg = _("Error in SolidFire API response, data was: %s"
-                    % data)
-            raise exception.ApiError(msg)
+            raise exception.SolidFireAPIDataException(data=data)
 
         LOG.debug(_("Leaving SolidFire delete_volume"))
 

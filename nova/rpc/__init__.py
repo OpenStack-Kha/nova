@@ -19,17 +19,15 @@
 
 from nova import flags
 from nova.openstack.common import cfg
-from nova.rpc.common import RemoteError, LOG
-from nova.utils import import_object
+from nova import utils
 
 
-rpc_backend_opt = \
-    cfg.StrOpt('rpc_backend',
-               default='nova.rpc.impl_kombu',
-               help="The messaging module to use, defaults to kombu.")
+rpc_backend_opt = cfg.StrOpt('rpc_backend',
+        default='nova.rpc.impl_kombu',
+        help="The messaging module to use, defaults to kombu.")
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(rpc_backend_opt)
+FLAGS.register_opt(rpc_backend_opt)
 
 
 def create_connection(new=True):
@@ -162,6 +160,37 @@ def cleanup():
     return _get_impl().cleanup()
 
 
+def cast_to_server(context, server_params, topic, msg):
+    """Invoke a remote method that does not return anything.
+
+    :param context: Information that identifies the user that has made this
+                    request.
+    :param server_params: Connection information
+    :param topic: The topic to send the notification to.
+    :param msg: This is a dict in the form { "method" : "method_to_invoke",
+                                             "args" : dict_of_kwargs }
+
+    :returns: None
+    """
+    return _get_impl().cast_to_server(context, server_params, topic, msg)
+
+
+def fanout_cast_to_server(context, server_params, topic, msg):
+    """Broadcast to a remote method invocation with no return.
+
+    :param context: Information that identifies the user that has made this
+                    request.
+    :param server_params: Connection information
+    :param topic: The topic to send the notification to.
+    :param msg: This is a dict in the form { "method" : "method_to_invoke",
+                                             "args" : dict_of_kwargs }
+
+    :returns: None
+    """
+    return _get_impl().fanout_cast_to_server(context, server_params, topic,
+            msg)
+
+
 _RPCIMPL = None
 
 
@@ -169,5 +198,5 @@ def _get_impl():
     """Delay import of rpc_backend until FLAGS are loaded."""
     global _RPCIMPL
     if _RPCIMPL is None:
-        _RPCIMPL = import_object(FLAGS.rpc_backend)
+        _RPCIMPL = utils.import_object(FLAGS.rpc_backend)
     return _RPCIMPL

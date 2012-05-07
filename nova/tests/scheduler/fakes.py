@@ -21,9 +21,8 @@ import mox
 from nova import db
 from nova.compute import instance_types
 from nova.compute import vm_states
-from nova.scheduler import distributed_scheduler
+from nova.scheduler import filter_scheduler
 from nova.scheduler import host_manager
-from nova.scheduler import zone_manager
 
 
 COMPUTE_NODES = [
@@ -57,10 +56,9 @@ INSTANCES = [
 ]
 
 
-class FakeDistributedScheduler(distributed_scheduler.DistributedScheduler):
+class FakeFilterScheduler(filter_scheduler.FilterScheduler):
     def __init__(self, *args, **kwargs):
-        super(FakeDistributedScheduler, self).__init__(*args, **kwargs)
-        self.zone_manager = zone_manager.ZoneManager()
+        super(FakeFilterScheduler, self).__init__(*args, **kwargs)
         self.host_manager = host_manager.HostManager()
 
 

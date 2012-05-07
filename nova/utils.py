@@ -24,26 +24,32 @@ import datetime
 import functools
 import hashlib
 import inspect
+import itertools
 import json
-import lockfile
 import os
 import pyclbr
 import random
 import re
 import shlex
+import shutil
 import socket
 import struct
 import sys
+import tempfile
+import threading
 import time
 import types
 import uuid
 import warnings
 from xml.sax import saxutils
 
+from eventlet import corolocal
 from eventlet import event
 from eventlet import greenthread
 from eventlet import semaphore
 from eventlet.green import subprocess
+import iso8601
+import lockfile
 import netaddr
 
 from nova import exception
@@ -52,13 +58,12 @@ from nova import log as logging
 from nova.openstack.common import cfg
 
 
-LOG = logging.getLogger("nova.utils")
-ISO_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+LOG = logging.getLogger(__name__)
+ISO_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 PERFECT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
 FLAGS = flags.FLAGS
 
-
-FLAGS.add_option(
+FLAGS.register_opt(
     cfg.BoolOpt('disable_process_locking', default=False,
                 help='Whether to disable inter-process locks'))
 
@@ -113,23 +118,25 @@ def vpn_ping(address, port, timeout=0.05, session_id=None):
     Returns False on a failure. Basic packet structure is below.
 
     Client packet (14 bytes)::
-     0 1      8 9  13
-    +-+--------+-----+
-    |x| cli_id |?????|
-    +-+--------+-----+
-    x = packet identifier 0x38
-    cli_id = 64 bit identifier
-    ? = unknown, probably flags/padding
+
+         0 1      8 9  13
+        +-+--------+-----+
+        |x| cli_id |?????|
+        +-+--------+-----+
+        x = packet identifier 0x38
+        cli_id = 64 bit identifier
+        ? = unknown, probably flags/padding
 
     Server packet (26 bytes)::
-     0 1      8 9  13 14    21 2225
-    +-+--------+-----+--------+----+
-    |x| srv_id |?????| cli_id |????|
-    +-+--------+-----+--------+----+
-    x = packet identifier 0x40
-    cli_id = 64 bit identifier
-    ? = unknown, probably flags/padding
-    bit 9 was 1 and the rest were 0 in testing
+
+         0 1      8 9  13 14    21 2225
+        +-+--------+-----+--------+----+
+        |x| srv_id |?????| cli_id |????|
+        +-+--------+-----+--------+----+
+        x = packet identifier 0x40
+        cli_id = 64 bit identifier
+        ? = unknown, probably flags/padding
+        bit 9 was 1 and the rest were 0 in testing
 
     """
     if session_id is None:
@@ -159,25 +166,29 @@ def fetchfile(url, target):
 
 
 def execute(*cmd, **kwargs):
-    """
-    Helper method to execute command with optional retry.
+    """Helper method to execute command with optional retry.
 
-    :cmd                Passed to subprocess.Popen.
-    :process_input      Send to opened process.
-    :check_exit_code    Single bool, int, or list of allowed exit codes.
-                        Defaults to [0].  Raise exception.ProcessExecutionError
-                        unless program exits with one of these code.
-    :delay_on_retry     True | False. Defaults to True. If set to True, wait a
-                        short amount of time before retrying.
-    :attempts           How many times to retry cmd.
-    :run_as_root        True | False. Defaults to False. If set to True,
-                        the command is prefixed by the command specified
-                        in the root_helper FLAG.
+    If you add a run_as_root=True command, don't forget to add the
+    corresponding filter to nova.rootwrap !
 
-    :raises exception.Error on receiving unknown arguments
-    :raises exception.ProcessExecutionError
+    :param cmd:                Passed to subprocess.Popen.
+    :param process_input:      Send to opened process.
+    :param check_exit_code:    Single bool, int, or list of allowed exit
+                               codes.  Defaults to [0].  Raise
+                               exception.ProcessExecutionError unless
+                               program exits with one of these code.
+    :param delay_on_retry:     True | False. Defaults to True. If set to
+                               True, wait a short amount of time
+                               before retrying.
+    :param attempts:           How many times to retry cmd.
+    :param run_as_root:        True | False. Defaults to False. If set to True,
+                               the command is prefixed by the command specified
+                               in the root_helper FLAG.
 
-    :returns a tuple, (stdout, stderr) from the spawned process, or None if
+    :raises exception.Error: on receiving unknown arguments
+    :raises exception.ProcessExecutionError:
+
+    :returns: a tuple, (stdout, stderr) from the spawned process, or None if
              the command fails.
     """
 
@@ -222,8 +233,7 @@ def execute(*cmd, **kwargs):
             _returncode = obj.returncode  # pylint: disable=E1101
             if _returncode:
                 LOG.debug(_('Result was %s') % _returncode)
-                if not ignore_exit_code \
-                    and _returncode not in check_exit_code:
+                if not ignore_exit_code and _returncode not in check_exit_code:
                     (stdout, stderr) = result
                     raise exception.ProcessExecutionError(
                             exit_code=_returncode,
@@ -311,10 +321,6 @@ def ssh_execute(ssh, cmd, process_input=None,
     return (stdout, stderr)
 
 
-def abspath(s):
-    return os.path.join(os.path.dirname(__file__), s)
-
-
 def novadir():
     import nova
     return os.path.abspath(nova.__file__).split('nova/__init__.py')[0]
@@ -365,38 +371,87 @@ EASIER_PASSWORD_SYMBOLS = ('23456789',  # Removed: 0, 1
 
 
 def current_audit_period(unit=None):
+    """This method gives you the most recently *completed* audit period.
+
+    arguments:
+            units: string, one of 'hour', 'day', 'month', 'year'
+                    Periods normally begin at the beginning (UTC) of the
+                    period unit (So a 'day' period begins at midnight UTC,
+                    a 'month' unit on the 1st, a 'year' on Jan, 1)
+                    unit string may be appended with an optional offset
+                    like so:  'day@18'  This will begin the period at 18:00
+                    UTC.  'month@15' starts a monthly period on the 15th,
+                    and year@3 begins a yearly one on March 1st.
+
+
+    returns:  2 tuple of datetimes (begin, end)
+              The begin timestamp of this audit period is the same as the
+              end of the previous."""
     if not unit:
         unit = FLAGS.instance_usage_audit_period
+
+    offset = 0
+    if '@' in unit:
+        unit, offset = unit.split("@", 1)
+        offset = int(offset)
+
     rightnow = utcnow()
     if unit not in ('month', 'day', 'year', 'hour'):
         raise ValueError('Time period must be hour, day, month or year')
-    n = 1  # we are currently only using multiples of 1 unit (mdragon)
     if unit == 'month':
-        year = rightnow.year - (n // 12)
-        n = n % 12
-        if n >= rightnow.month:
-            year -= 1
-            month = 12 + (rightnow.month - n)
-        else:
-            month = rightnow.month - n
-        begin = datetime.datetime(day=1, month=month, year=year)
-        end = datetime.datetime(day=1,
+        if offset == 0:
+            offset = 1
+        end = datetime.datetime(day=offset,
                                 month=rightnow.month,
                                 year=rightnow.year)
+        if end >= rightnow:
+            year = rightnow.year
+            if 1 >= rightnow.month:
+                year -= 1
+                month = 12 + (rightnow.month - 1)
+            else:
+                month = rightnow.month - 1
+            end = datetime.datetime(day=offset,
+                                    month=month,
+                                    year=year)
+        year = end.year
+        if 1 >= end.month:
+            year -= 1
+            month = 12 + (end.month - 1)
+        else:
+            month = end.month - 1
+        begin = datetime.datetime(day=offset, month=month, year=year)
 
     elif unit == 'year':
-        begin = datetime.datetime(day=1, month=1, year=rightnow.year - n)
-        end = datetime.datetime(day=1, month=1, year=rightnow.year)
+        if offset == 0:
+            offset = 1
+        end = datetime.datetime(day=1, month=offset, year=rightnow.year)
+        if end >= rightnow:
+            end = datetime.datetime(day=1,
+                                    month=offset,
+                                    year=rightnow.year - 1)
+            begin = datetime.datetime(day=1,
+                                      month=offset,
+                                      year=rightnow.year - 2)
+        else:
+            begin = datetime.datetime(day=1,
+                                      month=offset,
+                                      year=rightnow.year - 1)
 
     elif unit == 'day':
-        b = rightnow - datetime.timedelta(days=n)
-        begin = datetime.datetime(day=b.day, month=b.month, year=b.year)
-        end = datetime.datetime(day=rightnow.day,
+        end = datetime.datetime(hour=offset,
+                               day=rightnow.day,
                                month=rightnow.month,
                                year=rightnow.year)
+        if end >= rightnow:
+            end = end - datetime.timedelta(days=1)
+        begin = end - datetime.timedelta(days=1)
+
     elif unit == 'hour':
-        end = rightnow.replace(minute=0, second=0, microsecond=0)
-        begin = end - datetime.timedelta(hours=n)
+        end = rightnow.replace(minute=offset, second=0, microsecond=0)
+        if end >= rightnow:
+            end = end - datetime.timedelta(hours=1)
+        begin = end - datetime.timedelta(hours=1)
 
     return (begin, end)
 
@@ -415,12 +470,12 @@ def usage_from_instance(instance_ref, network_info=None, **kw):
           disk_gb=instance_ref['root_gb'] + instance_ref['ephemeral_gb'],
           display_name=instance_ref['display_name'],
           created_at=str(instance_ref['created_at']),
-          launched_at=str(instance_ref['launched_at']) \
+          launched_at=str(instance_ref['launched_at'])
                       if instance_ref['launched_at'] else '',
           image_ref_url=image_ref_url,
           state=instance_ref['vm_state'],
-          state_description=instance_ref['task_state'] \
-                             if instance_ref['task_state'] else '')
+          state_description=instance_ref['task_state']
+                            if instance_ref['task_state'] else '')
 
     if network_info is not None:
         usage_info['fixed_ips'] = network_info.fixed_ips()
@@ -536,13 +591,27 @@ def parse_strtime(timestr, fmt=PERFECT_TIME_FORMAT):
 
 
 def isotime(at=None):
-    """Returns iso formatted utcnow."""
-    return strtime(at, ISO_TIME_FORMAT)
+    """Stringify time in ISO 8601 format"""
+    if not at:
+        at = datetime.datetime.utcnow()
+    str = at.strftime(ISO_TIME_FORMAT)
+    tz = at.tzinfo.tzname(None) if at.tzinfo else 'UTC'
+    str += ('Z' if tz == 'UTC' else tz)
+    return str
 
 
 def parse_isotime(timestr):
     """Turn an iso formatted time back into a datetime."""
-    return parse_strtime(timestr, ISO_TIME_FORMAT)
+    try:
+        return iso8601.parse_date(timestr)
+    except (iso8601.ParseError, TypeError) as e:
+        raise ValueError(e.message)
+
+
+def normalize_time(timestamp):
+    """Normalize time in arbitrary timezone to UTC"""
+    offset = timestamp.utcoffset()
+    return timestamp.replace(tzinfo=None) - offset if offset else timestamp
 
 
 def parse_mailmap(mailmap='.mailmap'):
@@ -573,7 +642,7 @@ class LazyPluggable(object):
 
     def __get_backend(self):
         if not self.__backend:
-            backend_name = self.__pivot.value
+            backend_name = FLAGS[self.__pivot]
             if backend_name not in self.__backends:
                 raise exception.Error(_('Invalid backend: %s') % backend_name)
 
@@ -635,7 +704,7 @@ class LoopingCall(object):
                 self.stop()
                 done.send(e.retvalue)
             except Exception:
-                logging.exception('in looping call')
+                LOG.exception(_('in looping call'))
                 done.send_exception(*sys.exc_info())
                 return
             else:
@@ -656,11 +725,8 @@ class LoopingCall(object):
 def xhtml_escape(value):
     """Escapes a string so it is valid within XML or XHTML.
 
-    Code is directly from the utf8 function in
-    http://github.com/facebook/tornado/blob/master/tornado/escape.py
-
     """
-    return saxutils.escape(value, {'"': '&quot;'})
+    return saxutils.escape(value, {'"': '&quot;', "'": '&apos;'})
 
 
 def utf8(value):
@@ -698,6 +764,11 @@ def to_primitive(value, convert_instances=False, level=0):
     for test in nasty:
         if test(value):
             return unicode(value)
+
+    # value of itertools.count doesn't get caught by inspects
+    # above and results in infinite loop when list(value) is called.
+    if type(value) == itertools.count:
+        return unicode(value)
 
     # FIXME(vish): Workaround for LP bug 852095. Without this workaround,
     #              tests that raise an exception in a mocked method that
@@ -769,27 +840,56 @@ else:
     anyjson.force_implementation("nova.utils")
 
 
+class GreenLockFile(lockfile.FileLock):
+    """Implementation of lockfile that allows for a lock per greenthread.
+
+    Simply implements lockfile:LockBase init with an addiontall suffix
+    on the unique name of the greenthread identifier
+    """
+    def __init__(self, path, threaded=True):
+        self.path = path
+        self.lock_file = os.path.abspath(path) + ".lock"
+        self.hostname = socket.gethostname()
+        self.pid = os.getpid()
+        if threaded:
+            t = threading.current_thread()
+            # Thread objects in Python 2.4 and earlier do not have ident
+            # attrs.  Worm around that.
+            ident = getattr(t, "ident", hash(t))
+            gident = corolocal.get_ident()
+            self.tname = "-%x-%x" % (ident & 0xffffffff, gident & 0xffffffff)
+        else:
+            self.tname = ""
+        dirname = os.path.dirname(self.lock_file)
+        self.unique_name = os.path.join(dirname,
+                                        "%s%s.%s" % (self.hostname,
+                                                     self.tname,
+                                                     self.pid))
+
+
 _semaphores = {}
 
 
 def synchronized(name, external=False):
     """Synchronization decorator.
 
-    Decorating a method like so:
-    @synchronized('mylock')
-    def foo(self, *args):
-       ...
+    Decorating a method like so::
+
+        @synchronized('mylock')
+        def foo(self, *args):
+           ...
 
     ensures that only one thread will execute the bar method at a time.
 
-    Different methods can share the same lock:
-    @synchronized('mylock')
-    def foo(self, *args):
-       ...
+    Different methods can share the same lock::
 
-    @synchronized('mylock')
-    def bar(self, *args):
-       ...
+        @synchronized('mylock')
+        def foo(self, *args):
+           ...
+
+        @synchronized('mylock')
+        def bar(self, *args):
+           ...
 
     This way only one of either foo or bar can be executing at a time.
 
@@ -798,35 +898,48 @@ def synchronized(name, external=False):
     a method decorated with @synchronized('mylock', external=True), only one
     of them will execute at a time.
 
+    Important limitation: you can only have one external lock running per
+    thread at a time. For example the following will fail:
+
+        @utils.synchronized('testlock1', external=True)
+        def outer_lock():
+
+            @utils.synchronized('testlock2', external=True)
+            def inner_lock():
+                pass
+            inner_lock()
+
+        outer_lock()
+
     """
 
     def wrap(f):
         @functools.wraps(f)
         def inner(*args, **kwargs):
             # NOTE(soren): If we ever go natively threaded, this will be racy.
-            #              See http://stackoverflow.com/questions/5390569/dyn\
+            #              See http://stackoverflow.com/questions/5390569/dyn
             #              amically-allocating-and-destroying-mutexes
             if name not in _semaphores:
                 _semaphores[name] = semaphore.Semaphore()
             sem = _semaphores[name]
             LOG.debug(_('Attempting to grab semaphore "%(lock)s" for method '
-                        '"%(method)s"...' % {'lock': name,
-                                             'method': f.__name__}))
+                        '"%(method)s"...') % {'lock': name,
+                                              'method': f.__name__})
             with sem:
                 LOG.debug(_('Got semaphore "%(lock)s" for method '
-                            '"%(method)s"...' % {'lock': name,
-                                                 'method': f.__name__}))
+                            '"%(method)s"...') % {'lock': name,
+                                                  'method': f.__name__})
                 if external and not FLAGS.disable_process_locking:
                     LOG.debug(_('Attempting to grab file lock "%(lock)s" for '
-                                'method "%(method)s"...' %
-                                {'lock': name, 'method': f.__name__}))
+                                'method "%(method)s"...') %
+                              {'lock': name, 'method': f.__name__})
                     lock_file_path = os.path.join(FLAGS.lock_path,
                                                   'nova-%s' % name)
-                    lock = lockfile.FileLock(lock_file_path)
+                    lock = GreenLockFile(lock_file_path)
                     with lock:
                         LOG.debug(_('Got file lock "%(lock)s" for '
-                                    'method "%(method)s"...' %
-                                    {'lock': name, 'method': f.__name__}))
+                                    'method "%(method)s"...') %
+                                  {'lock': name, 'method': f.__name__})
                         retval = f(*args, **kwargs)
                 else:
                     retval = f(*args, **kwargs)
@@ -839,6 +952,92 @@ def synchronized(name, external=False):
             return retval
         return inner
     return wrap
+
+
+def cleanup_file_locks():
+    """clean up stale locks left behind by process failures
+
+    The lockfile module, used by @synchronized, can leave stale lockfiles
+    behind after process failure. These locks can cause process hangs
+    at startup, when a process deadlocks on a lock which will never
+    be unlocked.
+
+    Intended to be called at service startup.
+
+    """
+
+    # NOTE(mikeyp) this routine incorporates some internal knowledge
+    #              from the lockfile module, and this logic really
+    #              should be part of that module.
+    #
+    # cleanup logic:
+    # 1) look for the lockfile modules's 'sentinel' files, of the form
+    #    hostname.[thread-.*]-pid, extract the pid.
+    #    if pid doesn't match a running process, delete the file since
+    #    it's from a dead process.
+    # 2) check for the actual lockfiles. if lockfile exists with linkcount
+    #    of 1, it's bogus, so delete it. A link count >= 2 indicates that
+    #    there are probably sentinels still linked to it from active
+    #    processes.  This check isn't perfect, but there is no way to
+    #    reliably tell which sentinels refer to which lock in the
+    #    lockfile implementation.
+
+    if FLAGS.disable_process_locking:
+        return
+
+    hostname = socket.gethostname()
+    sentinel_re = hostname + r'\..*-(\d+$)'
+    lockfile_re = r'nova-.*\.lock'
+    files = os.listdir(FLAGS.lock_path)
+
+    # cleanup sentinels
+    for filename in files:
+        match = re.match(sentinel_re, filename)
+        if match is None:
+            continue
+        pid = match.group(1)
+        LOG.debug(_('Found sentinel %(filename)s for pid %(pid)s') %
+                  {'filename': filename, 'pid': pid})
+        try:
+            os.kill(int(pid), 0)
+        except OSError, e:
+            # PID wasn't found
+            delete_if_exists(os.path.join(FLAGS.lock_path, filename))
+            LOG.debug(_('Cleaned sentinel %(filename)s for pid %(pid)s') %
+                      {'filename': filename, 'pid': pid})
+
+    # cleanup lock files
+    for filename in files:
+        match = re.match(lockfile_re, filename)
+        if match is None:
+            continue
+        try:
+            stat_info = os.stat(os.path.join(FLAGS.lock_path, filename))
+        except OSError as (errno, strerror):
+            if errno == 2:  # doesn't exist
+                continue
+            else:
+                raise
+        msg = (_('Found lockfile %(file)s with link count %(count)d') %
+               {'file': filename, 'count': stat_info.st_nlink})
+        LOG.debug(msg)
+        if stat_info.st_nlink == 1:
+            delete_if_exists(os.path.join(FLAGS.lock_path, filename))
+            msg = (_('Cleaned lockfile %(file)s with link count %(count)d') %
+                   {'file': filename, 'count': stat_info.st_nlink})
+            LOG.debug(msg)
+
+
+def delete_if_exists(pathname):
+    """delete a file, but ignore file not found error"""
+
+    try:
+        os.unlink(pathname)
+    except OSError as (errno, strerror):
+        if errno == 2:  # doesn't exist
+            return
+        else:
+            raise
 
 
 def get_from_path(items, path):
@@ -965,7 +1164,7 @@ def parse_server_string(server_str):
         return (address, port)
 
     except Exception:
-        LOG.debug(_('Invalid server_string: %s' % server_str))
+        LOG.debug(_('Invalid server_string: %s') % server_str)
         return ('', '')
 
 
@@ -1019,6 +1218,10 @@ def is_valid_cidr(address):
         # Validate the correct CIDR Address
         netaddr.IPNetwork(address)
     except netaddr.core.AddrFormatError:
+        return False
+    except UnboundLocalError:
+        # NOTE(MotoKen): work around bug in netaddr 0.7.5 (see detail in
+        # https://github.com/drkjam/netaddr/issues/2)
         return False
 
     # Prior validation partially verify /xx part
@@ -1109,7 +1312,7 @@ def save_and_reraise_exception():
     In some cases the exception context can be cleared, resulting in None
     being attempted to be reraised after an exception handler is run. This
     can happen when eventlet switches greenthreads or when running an
-    exception handler, code raises and catches and exception. In both
+    exception handler, code raises and catches an exception. In both
     cases the exception context will be cleared.
 
     To work around this, we save the exception state, run handler code, and
@@ -1120,8 +1323,10 @@ def save_and_reraise_exception():
     try:
         yield
     except Exception:
-        LOG.exception(_('Original exception being dropped'),
-                      exc_info=(type_, value, traceback))
+        # NOTE(jkoelker): Using LOG.error here since it accepts exc_info
+        #                 as a kwargs.
+        LOG.error(_('Original exception being dropped'),
+                  exc_info=(type_, value, traceback))
         raise
     raise type_, value, traceback
 
@@ -1408,7 +1613,13 @@ def service_is_up(service):
 
 def generate_mac_address():
     """Generate an Ethernet MAC address."""
-    mac = [0x02, 0x16, 0x3e,
+    # NOTE(vish): We would prefer to use 0xfe here to ensure that linux
+    #             bridge mac addresses don't change, but it appears to
+    #             conflict with libvirt, so we use the next highest octet
+    #             that has the unicast and locally administered bits set
+    #             properly: 0xfa.
+    #             Discussion: https://bugs.launchpad.net/nova/+bug/921838
+    mac = [0xfa, 0x16, 0x3e,
            random.randint(0x00, 0x7f),
            random.randint(0x00, 0xff),
            random.randint(0x00, 0xff)]
@@ -1422,3 +1633,82 @@ def read_file_as_root(file_path):
         return out
     except exception.ProcessExecutionError:
         raise exception.FileNotFound(file_path=file_path)
+
+
+@contextlib.contextmanager
+def temporary_chown(path, owner_uid=None):
+    """Temporarily chown a path.
+
+    :params owner_uid: UID of temporary owner (defaults to current user)
+    """
+    if owner_uid is None:
+        owner_uid = os.getuid()
+
+    orig_uid = os.stat(path).st_uid
+
+    if orig_uid != owner_uid:
+        execute('chown', owner_uid, path, run_as_root=True)
+    try:
+        yield
+    finally:
+        if orig_uid != owner_uid:
+            execute('chown', orig_uid, path, run_as_root=True)
+
+
+@contextlib.contextmanager
+def tempdir(**kwargs):
+    tmpdir = tempfile.mkdtemp(**kwargs)
+    try:
+        yield tmpdir
+    finally:
+        try:
+            shutil.rmtree(tmpdir)
+        except OSError, e:
+            LOG.debug(_('Could not remove tmpdir: %s'), str(e))
+
+
+def strcmp_const_time(s1, s2):
+    """Constant-time string comparison.
+
+    :params s1: the first string
+    :params s2: the second string
+
+    :return: True if the strings are equal.
+
+    This function takes two strings and compares them.  It is intended to be
+    used when doing a comparison for authentication purposes to help guard
+    against timing attacks.
+    """
+    if len(s1) != len(s2):
+        return False
+    result = 0
+    for (a, b) in zip(s1, s2):
+        result |= ord(a) ^ ord(b)
+    return result == 0
+
+
+class UndoManager(object):
+    """Provides a mechanism to facilitate rolling back a series of actions
+    when an exception is raised.
+    """
+    def __init__(self):
+        self.undo_stack = []
+
+    def undo_with(self, undo_func):
+        self.undo_stack.append(undo_func)
+
+    def _rollback(self):
+        for undo_func in reversed(self.undo_stack):
+            undo_func()
+
+    def rollback_and_reraise(self, msg=None):
+        """Rollback a series of actions then re-raise the exception.
+
+        .. note:: (sirp) This should only be called within an
+                  exception handler.
+        """
+        with save_and_reraise_exception():
+            if msg:
+                LOG.exception(msg)
+
+            self._rollback()

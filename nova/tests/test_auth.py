@@ -28,7 +28,7 @@ from nova.api.ec2 import cloud
 from nova.auth import fakeldap
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger('nova.tests.auth_unittest')
+LOG = logging.getLogger(__name__)
 
 
 class user_generator(object):
@@ -155,7 +155,7 @@ class _AuthManagerBaseTestCase(test.TestCase):
                         '/services/Cloud'))
 
     def test_can_get_credentials(self):
-        self.flags(use_deprecated_auth=True)
+        self.flags(auth_strategy='deprecated')
         st = {'access': 'access', 'secret': 'secret'}
         with user_and_project_generator(self.manager, user_state=st) as (u, p):
             credentials = self.manager.get_environment_rc(u, p)
@@ -394,6 +394,11 @@ class _AuthManagerBaseTestCase(test.TestCase):
             self.assertEqual(old_user.secret, user.secret)
             self.assertEqual(old_user.is_admin(), user.is_admin())
 
+    def test_get_nonexistent_user_raises_notfound_exception(self):
+        self.assertRaises(exception.NotFound,
+                          self.manager.get_user,
+                          'joeblow')
+
 
 class AuthManagerLdapTestCase(_AuthManagerBaseTestCase):
     auth_driver = 'nova.auth.ldapdriver.FakeLdapDriver'
@@ -415,5 +420,5 @@ class AuthManagerDbTestCase(_AuthManagerBaseTestCase):
 
 
 if __name__ == "__main__":
-    # TODO: Implement use_fake as an option
+    # TODO(anotherjesse): Implement use_fake as an option
     unittest.main()

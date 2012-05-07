@@ -24,7 +24,7 @@ from nova import exception
 
 
 class Controller(object):
-    """ The server metadata API controller for the Openstack API """
+    """ The server metadata API controller for the OpenStack API """
 
     def __init__(self):
         self.compute_api = compute.API()
@@ -76,9 +76,7 @@ class Controller(object):
             expl = _('Malformed request body')
             raise exc.HTTPBadRequest(explanation=expl)
 
-        try:
-            meta_value = meta_item[id]
-        except (AttributeError, KeyError):
+        if id not in meta_item:
             expl = _('Request body and URI mismatch')
             raise exc.HTTPBadRequest(explanation=expl)
 
@@ -150,9 +148,7 @@ class Controller(object):
 
         metadata = self._get_metadata(context, server_id)
 
-        try:
-            meta_value = metadata[id]
-        except KeyError:
+        if id not in metadata:
             msg = _("Metadata item was not found")
             raise exc.HTTPNotFound(explanation=msg)
 
@@ -165,7 +161,7 @@ class Controller(object):
 
     def _handle_quota_error(self, error):
         """Reraise quota errors as api-specific http exceptions."""
-        if error.code == "MetadataLimitExceeded":
+        if error.kwargs['code'] == "MetadataLimitExceeded":
             raise exc.HTTPRequestEntityTooLarge(explanation=error.message,
                                                 headers={'Retry-After': 0})
         raise error

@@ -24,16 +24,13 @@ from nova.rpc import impl_carrot
 from nova.tests.rpc import common
 
 
-LOG = logging.getLogger('nova.tests.rpc')
+LOG = logging.getLogger(__name__)
 
 
-class RpcCarrotTestCase(common._BaseRpcTestCase):
+class RpcCarrotTestCase(common.BaseRpcTestCase):
     def setUp(self):
         self.rpc = impl_carrot
         super(RpcCarrotTestCase, self).setUp(supports_timeouts=False)
-
-    def tearDown(self):
-        super(RpcCarrotTestCase, self).tearDown()
 
     def test_connectionpool_single(self):
         """Test that ConnectionPool recycles a single connection."""

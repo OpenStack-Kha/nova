@@ -35,7 +35,7 @@ import stubout
 
 from nova import flags
 import nova.image.fake
-from nova import log
+from nova import log as logging
 from nova.openstack.common import cfg
 from nova import utils
 from nova import service
@@ -53,9 +53,9 @@ test_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(test_opts)
+FLAGS.register_opts(test_opts)
 
-LOG = log.getLogger('nova.tests')
+LOG = logging.getLogger(__name__)
 
 
 class skip_test(object):
@@ -115,6 +115,10 @@ def skip_if_fake(func):
     return _skipper
 
 
+class TestingException(Exception):
+    pass
+
+
 class TestCase(unittest.TestCase):
     """Test case base class for all unit tests."""
 
@@ -134,7 +138,7 @@ class TestCase(unittest.TestCase):
         self.stubs = stubout.StubOutForTesting()
         self.injected = []
         self._services = []
-        self._original_flags = FLAGS.FlagValuesDict()
+        self._overridden_opts = []
 
     def tearDown(self):
         """Runs after each test method to tear down test environment."""
@@ -173,10 +177,17 @@ class TestCase(unittest.TestCase):
                 except Exception:
                     pass
 
+            # Delete attributes that don't start with _ so they don't pin
+            # memory around unnecessarily for the duration of the test
+            # suite
+            for key in [k for k in self.__dict__.keys() if k[0] != '_']:
+                del self.__dict__[key]
+
     def flags(self, **kw):
         """Override flag variables for a test."""
         for k, v in kw.iteritems():
-            setattr(FLAGS, k, v)
+            FLAGS.set_override(k, v)
+            self._overridden_opts.append(k)
 
     def reset_flags(self):
         """Resets all flag variables for the test.
@@ -184,9 +195,9 @@ class TestCase(unittest.TestCase):
         Runs after each test.
 
         """
-        FLAGS.Reset()
-        for k, v in self._original_flags.iteritems():
-            setattr(FLAGS, k, v)
+        for k in self._overridden_opts:
+            FLAGS.set_override(k, None)
+        self._overridden_opts = []
 
     def start_service(self, name, host=None, **kwargs):
         host = host and host or uuid.uuid4().hex

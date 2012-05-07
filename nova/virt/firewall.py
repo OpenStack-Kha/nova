@@ -26,15 +26,14 @@ from nova import utils
 from nova.virt import netutils
 
 
-LOG = logging.getLogger("nova.virt.firewall")
+LOG = logging.getLogger(__name__)
 
-allow_same_net_traffic_opt = \
-    cfg.BoolOpt('allow_same_net_traffic',
-                default=True,
-                help='Whether to allow network traffic from same network')
+allow_same_net_traffic_opt = cfg.BoolOpt('allow_same_net_traffic',
+        default=True,
+        help='Whether to allow network traffic from same network')
 
 FLAGS = flags.FLAGS
-FLAGS.add_option(allow_same_net_traffic_opt)
+FLAGS.register_opt(allow_same_net_traffic_opt)
 
 
 class FirewallDriver(object):
@@ -89,7 +88,7 @@ class FirewallDriver(object):
         """Create rules to block spoofing and allow dhcp.
 
         This gets called when spawning an instance, before
-        :method:`prepare_instance_filter`.
+        :py:meth:`prepare_instance_filter`.
 
         """
         raise NotImplementedError()
@@ -328,15 +327,16 @@ class IptablesFirewallDriver(FirewallDriver):
                         nw_api = nova.network.API()
                         for instance in rule['grantee_group']['instances']:
                             LOG.info('instance: %r', instance)
-                            ips = []
                             nw_info = nw_api.get_instance_nw_info(ctxt,
                                                                   instance)
-                            for net in nw_info:
-                                ips.extend(net[1]['ips'])
+
+                            ips = [ip['address']
+                                for ip in nw_info.fixed_ips()
+                                    if ip['version'] == version]
 
                             LOG.info('ips: %r', ips)
                             for ip in ips:
-                                subrule = args + ['-s %s' % ip['ip']]
+                                subrule = args + ['-s %s' % ip]
                                 fw_rules += [' '.join(subrule)]
 
                 LOG.info('Using fw_rules: %r', fw_rules)
@@ -363,7 +363,7 @@ class IptablesFirewallDriver(FirewallDriver):
             self.add_filters_for_instance(instance)
 
     def refresh_provider_fw_rules(self):
-        """See class:FirewallDriver: docs."""
+        """See :class:`FirewallDriver` docs."""
         self._do_refresh_provider_fw_rules()
         self.iptables.apply()
 
@@ -441,3 +441,18 @@ class IptablesFirewallDriver(FirewallDriver):
             args += ['-j DROP']
             fw_rules += [' '.join(args)]
         return ipv4_rules, ipv6_rules
+
+
+class NoopFirewallDriver(object):
+    """Firewall driver which just provides No-op methods."""
+    def __init__(*args, **kwargs):
+        pass
+
+    def _noop(*args, **kwargs):
+        pass
+
+    def __getattr__(self, key):
+        return self._noop
+
+    def instance_filter_exists(self, instance, network_info):
+        return True

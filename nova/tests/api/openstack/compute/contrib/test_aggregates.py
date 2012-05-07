@@ -24,7 +24,7 @@ from nova import log as logging
 from nova import test
 
 
-LOG = logging.getLogger('nova.tests.aggregates')
+LOG = logging.getLogger(__name__)
 AGGREGATE_LIST = [
         {"name": "aggregate1", "id": "1", "availability_zone": "nova1"},
         {"name": "aggregate2", "id": "2", "availability_zone": "nova1"},
@@ -86,6 +86,17 @@ class AggregateTestCase(test.TestCase):
                           self.req, {"aggregate":
                                      {"name": "test",
                                       "availability_zone": "nova1"}})
+
+    def test_create_with_incorrect_availability_zone(self):
+        def stub_create_aggregate(context, name, availability_zone):
+            raise exception.InvalidAggregateAction
+        self.stubs.Set(self.controller.api, "create_aggregate",
+                       stub_create_aggregate)
+
+        self.assertRaises(exc.HTTPConflict, self.controller.create,
+                          self.req, {"aggregate":
+                                     {"name": "test",
+                                      "availability_zone": "nova_bad"}})
 
     def test_create_with_no_aggregate(self):
         self.assertRaises(exc.HTTPBadRequest, self.controller.create,
@@ -209,9 +220,9 @@ class AggregateTestCase(test.TestCase):
         self.stubs.Set(self.controller.api, "add_host_to_aggregate",
                        stub_add_host_to_aggregate)
 
-        aggregate = self.\
-                        controller.action(self.req, "1",
-                                          body={"add_host": {"host": "host1"}})
+        aggregate = self.controller.action(self.req, "1",
+                                           body={"add_host": {"host":
+                                                              "host1"}})
 
         self.assertEqual(aggregate["aggregate"], AGGREGATE)
 

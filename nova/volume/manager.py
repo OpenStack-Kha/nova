@@ -49,7 +49,7 @@ from nova import utils
 from nova.volume import volume_types
 
 
-LOG = logging.getLogger('nova.volume.manager')
+LOG = logging.getLogger(__name__)
 
 volume_manager_opts = [
     cfg.StrOpt('storage_availability_zone',
@@ -67,7 +67,7 @@ volume_manager_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(volume_manager_opts)
+FLAGS.register_opts(volume_manager_opts)
 
 
 class VolumeManager(manager.SchedulerDependentManager):
@@ -136,35 +136,14 @@ class VolumeManager(manager.SchedulerDependentManager):
             with utils.save_and_reraise_exception():
                 self.db.volume_update(context,
                                       volume_ref['id'], {'status': 'error'})
-                self._notify_vsa(context, volume_ref, 'error')
 
         now = utils.utcnow()
         self.db.volume_update(context,
                               volume_ref['id'], {'status': 'available',
                                                  'launched_at': now})
         LOG.debug(_("volume %s: created successfully"), volume_ref['name'])
-        self._notify_vsa(context, volume_ref, 'available')
         self._reset_stats()
         return volume_id
-
-    def _notify_vsa(self, context, volume_ref, status):
-        if volume_ref['volume_type_id'] is None:
-            return
-
-        if volume_types.is_vsa_drive(volume_ref['volume_type_id']):
-            vsa_id = None
-            for i in volume_ref.get('volume_metadata'):
-                if i['key'] == 'to_vsa_id':
-                    vsa_id = int(i['value'])
-                    break
-
-            if vsa_id:
-                rpc.cast(context,
-                         FLAGS.vsa_topic,
-                         {"method": "vsa_volume_created",
-                          "args": {"vol_id": volume_ref['id'],
-                                   "vsa_id": vsa_id,
-                                   "status": status}})
 
     def delete_volume(self, context, volume_id):
         """Deletes and unexports volume."""
@@ -231,6 +210,12 @@ class VolumeManager(manager.SchedulerDependentManager):
         try:
             LOG.debug(_("snapshot %s: deleting"), snapshot_ref['name'])
             self.driver.delete_snapshot(snapshot_ref)
+        except exception.SnapshotIsBusy:
+            LOG.debug(_("snapshot %s: snapshot is busy"), snapshot_ref['name'])
+            self.db.snapshot_update(context,
+                                    snapshot_ref['id'],
+                                    {'status': 'available'})
+            return True
         except Exception:
             with utils.save_and_reraise_exception():
                 self.db.snapshot_update(context,
@@ -260,7 +245,8 @@ class VolumeManager(manager.SchedulerDependentManager):
         This method calls the driver initialize_connection and returns
         it to the caller.  The connector parameter is a dictionary with
         information about the host that will connect to the volume in the
-        following format:
+        following format::
+
             {
                 'ip': ip,
                 'initiator': initiator,
@@ -273,7 +259,8 @@ class VolumeManager(manager.SchedulerDependentManager):
         connections.
 
         driver is responsible for doing any necessary security setup and
-        returning a connection_info dictionary in the following format:
+        returning a connection_info dictionary in the following format::
+
             {
                 'driver_volume_type': driver_volume_type,
                 'data': data,

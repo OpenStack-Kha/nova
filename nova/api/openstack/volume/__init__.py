@@ -29,7 +29,7 @@ from nova.api.openstack.volume import versions
 from nova import log as logging
 
 
-LOG = logging.getLogger('nova.api.openstack.volume')
+LOG = logging.getLogger(__name__)
 
 
 class APIRouter(nova.api.openstack.APIRouter):
@@ -58,4 +58,5 @@ class APIRouter(nova.api.openstack.APIRouter):
 
         self.resources['snapshots'] = snapshots.create_resource()
         mapper.resource("snapshot", "snapshots",
-                        controller=self.resources['snapshots'])
+                        controller=self.resources['snapshots'],
+                        collection={'detail': 'GET'})

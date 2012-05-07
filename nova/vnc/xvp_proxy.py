@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright (c) 2012 Openstack, LLC.
+# Copyright (c) 2012 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,7 +35,7 @@ from nova import version
 from nova import wsgi
 
 
-LOG = logging.getLogger('nova.xvpvncproxy')
+LOG = logging.getLogger(__name__)
 
 xvp_proxy_opts = [
     cfg.IntOpt('xvpvncproxy_port',
@@ -47,7 +47,7 @@ xvp_proxy_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(xvp_proxy_opts)
+FLAGS.register_opts(xvp_proxy_opts)
 
 flags.DECLARE('consoleauth_topic', 'nova.consoleauth')
 

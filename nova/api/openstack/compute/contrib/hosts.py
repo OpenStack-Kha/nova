@@ -1,4 +1,4 @@
-# Copyright (c) 2011 Openstack, LLC.
+# Copyright (c) 2011 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -22,7 +22,7 @@ from xml.parsers import expat
 from nova.api.openstack import wsgi
 from nova.api.openstack import xmlutil
 from nova.api.openstack import extensions
-from nova import compute
+from nova.compute import api as compute_api
 from nova import db
 from nova import exception
 from nova import flags
@@ -30,7 +30,7 @@ from nova import log as logging
 from nova.scheduler import api as scheduler_api
 
 
-LOG = logging.getLogger("nova.api.openstack.compute.contrib.hosts")
+LOG = logging.getLogger(__name__)
 FLAGS = flags.FLAGS
 authorize = extensions.extension_authorizer('compute', 'hosts')
 
@@ -120,7 +120,7 @@ def check_host(fn):
 class HostController(object):
     """The Hosts API controller for the OpenStack API."""
     def __init__(self):
-        self.compute_api = compute.API()
+        self.api = compute_api.HostAPI()
         super(HostController, self).__init__()
 
     @wsgi.serializers(xml=HostIndexTemplate)
@@ -133,31 +133,53 @@ class HostController(object):
     @check_host
     def update(self, req, id, body):
         authorize(req.environ['nova.context'])
+        update_values = {}
         for raw_key, raw_val in body.iteritems():
             key = raw_key.lower().strip()
             val = raw_val.lower().strip()
-            # NOTE: (dabo) Right now only 'status' can be set, but other
-            # settings may follow.
             if key == "status":
-                if val[:6] in ("enable", "disabl"):
-                    enabled = val.startswith("enable")
+                if val in ("enable", "disable"):
+                    update_values['status'] = val.startswith("enable")
                 else:
                     explanation = _("Invalid status: '%s'") % raw_val
                     raise webob.exc.HTTPBadRequest(explanation=explanation)
             elif key == "maintenance_mode":
-                raise webob.exc.HTTPNotImplemented
+                if val not in ['enable', 'disable']:
+                    explanation = _("Invalid mode: '%s'") % raw_val
+                    raise webob.exc.HTTPBadRequest(explanation=explanation)
+                update_values['maintenance_mode'] = val == 'enable'
             else:
                 explanation = _("Invalid update setting: '%s'") % raw_key
                 raise webob.exc.HTTPBadRequest(explanation=explanation)
 
-        return self._set_enabled_status(req, id, enabled=enabled)
+        # this is for handling multiple settings at the same time:
+        # the result dictionaries are merged in the first one.
+        # Note: the 'host' key will always be the same so it's
+        # okay that it gets overwritten.
+        update_setters = {'status': self._set_enabled_status,
+                          'maintenance_mode': self._set_host_maintenance}
+        result = {}
+        for key, value in update_values.iteritems():
+            result.update(update_setters[key](req, id, value))
+        return result
+
+    def _set_host_maintenance(self, req, host, mode=True):
+        """Start/Stop host maintenance window. On start, it triggers
+        guest VMs evacuation."""
+        context = req.environ['nova.context']
+        LOG.audit(_("Putting host %(host)s in maintenance "
+                    "mode %(mode)s.") % locals())
+        result = self.api.set_host_maintenance(context, host, mode)
+        if result not in ("on_maintenance", "off_maintenance"):
+            raise webob.exc.HTTPBadRequest(explanation=result)
+        return {"host": host, "maintenance_mode": result}
 
     def _set_enabled_status(self, req, host, enabled):
         """Sets the specified host's ability to accept new instances."""
         context = req.environ['nova.context']
         state = "enabled" if enabled else "disabled"
         LOG.audit(_("Setting host %(host)s to %(state)s.") % locals())
-        result = self.compute_api.set_host_enabled(context, host=host,
+        result = self.api.set_host_enabled(context, host=host,
                 enabled=enabled)
         if result not in ("enabled", "disabled"):
             # An error message was returned
@@ -169,7 +191,7 @@ class HostController(object):
         context = req.environ['nova.context']
         authorize(context)
         try:
-            result = self.compute_api.host_power_action(context, host=host,
+            result = self.api.host_power_action(context, host=host,
                     action=action)
         except NotImplementedError as e:
             raise webob.exc.HTTPBadRequest(explanation=e.msg)
@@ -194,7 +216,9 @@ class HostController(object):
         :param context: security context
         :param host: hostname
         :returns: expected to use HostShowTemplate.
-            ex. {'host': {'resource':D},..}
+            ex.::
+
+                {'host': {'resource':D},..}
                 D: {'host': 'hostname','project': 'admin',
                     'cpu': 1, 'memory_mb': 2048, 'disk_gb': 30}
         """

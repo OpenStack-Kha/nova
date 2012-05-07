@@ -1,4 +1,4 @@
-# Copyright (c) 2011-2012 Openstack, LLC.
+# Copyright (c) 2011-2012 OpenStack, LLC.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,10 +14,10 @@
 #    under the License.
 
 
-import abstract_filter
+from nova.scheduler import filters
 
 
-class AllHostsFilter(abstract_filter.AbstractHostFilter):
+class AllHostsFilter(filters.BaseHostFilter):
     """NOP host filter. Returns all hosts."""
 
     def host_passes(self, host_state, filter_properties):

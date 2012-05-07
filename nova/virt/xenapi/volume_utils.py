@@ -28,10 +28,10 @@ from nova import exception
 from nova import flags
 from nova import log as logging
 from nova import utils
-from nova.virt.xenapi import HelperBase
+from nova.virt import xenapi
 
 FLAGS = flags.FLAGS
-LOG = logging.getLogger("nova.virt.xenapi.volume_utils")
+LOG = logging.getLogger(__name__)
 
 
 class StorageError(Exception):
@@ -41,7 +41,7 @@ class StorageError(Exception):
         super(StorageError, self).__init__(message)
 
 
-class VolumeHelper(HelperBase):
+class VolumeHelper(xenapi.HelperBase):
     """
     The class that wraps the helper methods together.
     """
@@ -187,30 +187,6 @@ class VolumeHelper(HelperBase):
         return sr_ref
 
     @classmethod
-    def create_vbd(cls, session, vm_ref, vdi_ref, userdevice, bootable):
-        """Create a VBD record.  Returns a Deferred that gives the new
-        VBD reference."""
-        vbd_rec = {}
-        vbd_rec['VM'] = vm_ref
-        vbd_rec['VDI'] = vdi_ref
-        vbd_rec['userdevice'] = str(userdevice)
-        vbd_rec['bootable'] = bootable
-        vbd_rec['mode'] = 'RW'
-        vbd_rec['type'] = 'disk'
-        vbd_rec['unpluggable'] = True
-        vbd_rec['empty'] = False
-        vbd_rec['other_config'] = {}
-        vbd_rec['qos_algorithm_type'] = ''
-        vbd_rec['qos_algorithm_params'] = {}
-        vbd_rec['qos_supported_algorithms'] = []
-        LOG.debug(_('Creating VBD for VM %(vm_ref)s,'
-                ' VDI %(vdi_ref)s ... ') % locals())
-        vbd_ref = session.call_xenapi('VBD.create', vbd_rec)
-        LOG.debug(_('Created VBD %(vbd_ref)s for VM %(vm_ref)s,'
-                ' VDI %(vdi_ref)s.') % locals())
-        return vbd_ref
-
-    @classmethod
     def create_pbd(cls, session, sr_ref, params):
         pbd_rec = {}
         pbd_rec['host'] = session.get_xenapi_host()
@@ -235,13 +211,22 @@ class VolumeHelper(HelperBase):
                         ' PBD %(pbd)s') % locals())
 
     @classmethod
-    def introduce_vdi(cls, session, sr_ref, vdi_uuid=None):
+    def introduce_vdi(cls, session, sr_ref, vdi_uuid=None, target_lun=None):
         """Introduce VDI in the host"""
         try:
             session.call_xenapi("SR.scan", sr_ref)
             if vdi_uuid:
                 LOG.debug("vdi_uuid: %s" % vdi_uuid)
                 vdi_ref = session.call_xenapi("VDI.get_by_uuid", vdi_uuid)
+            elif target_lun:
+                vdi_refs = session.call_xenapi("SR.get_VDIs", sr_ref)
+                for curr_ref in vdi_refs:
+                    curr_rec = session.call_xenapi("VDI.get_record", curr_ref)
+                    if ('sm_config' in curr_rec and
+                            'LUNid' in curr_rec['sm_config'] and
+                            curr_rec['sm_config']['LUNid'] == str(target_lun)):
+                        vdi_ref = curr_ref
+                        break
             else:
                 vdi_ref = (session.call_xenapi("SR.get_VDIs", sr_ref))[0]
         except cls.XenAPI.Failure, exc:
@@ -293,8 +278,8 @@ class VolumeHelper(HelperBase):
                 vbd_refs = session.call_xenapi("VDI.get_VBDs", vdi_ref)
             except StorageError, ex:
                 LOG.exception(ex)
-                raise StorageError(_('Unable to find vbd for vdi %s') \
-                                   % vdi_ref)
+                raise StorageError(_('Unable to find vbd for vdi %s') %
+                                   vdi_ref)
             if len(vbd_refs) > 0:
                 return
 
@@ -323,10 +308,10 @@ class VolumeHelper(HelperBase):
         target_iqn = data['target_iqn']
         LOG.debug('(vol_id,number,host,port,iqn): (%s,%s,%s,%s)',
                   volume_id, target_host, target_port, target_iqn)
-        if (device_number < 0) or \
-            (volume_id is None) or \
-            (target_host is None) or \
-            (target_iqn is None):
+        if (device_number < 0 or
+            volume_id is None or
+            target_host is None or
+            target_iqn is None):
             raise StorageError(_('Unable to obtain target information'
                     ' %(data)s, %(mountpoint)s') % locals())
         volume_info = {}
@@ -334,8 +319,8 @@ class VolumeHelper(HelperBase):
         volume_info['target'] = target_host
         volume_info['port'] = target_port
         volume_info['targetIQN'] = target_iqn
-        if  'auth_method' in connection_info and \
-             connection_info['auth_method'] == 'CHAP':
+        if ('auth_method' in connection_info and
+            connection_info['auth_method'] == 'CHAP'):
             volume_info['chapuser'] = connection_info['auth_username']
             volume_info['chappassword'] = connection_info['auth_password']
 
@@ -348,8 +333,8 @@ class VolumeHelper(HelperBase):
             mountpoint = mountpoint[5:]
         if re.match('^[hs]d[a-p]$', mountpoint):
             return (ord(mountpoint[2:3]) - ord('a'))
-        elif re.match('^vd[a-p]$', mountpoint):
-            return (ord(mountpoint[2:3]) - ord('a'))
+        elif re.match('^x?vd[a-p]$', mountpoint):
+            return (ord(mountpoint[-1]) - ord('a'))
         elif re.match('^[0-9]+$', mountpoint):
             return string.atoi(mountpoint, 10)
         else:

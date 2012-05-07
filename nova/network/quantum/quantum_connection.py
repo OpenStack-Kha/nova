@@ -21,7 +21,7 @@ from nova.network.quantum import client as quantum_client
 from nova.openstack.common import cfg
 
 
-LOG = logging.getLogger("nova.network.quantum.quantum_connection")
+LOG = logging.getLogger(__name__)
 
 quantum_opts = [
     cfg.StrOpt('quantum_connection_host',
@@ -36,7 +36,7 @@ quantum_opts = [
     ]
 
 FLAGS = flags.FLAGS
-FLAGS.add_options(quantum_opts)
+FLAGS.register_opts(quantum_opts)
 
 
 class QuantumClientConnection(object):
@@ -47,9 +47,12 @@ class QuantumClientConnection(object):
        version of this class for unit tests.
     """
 
-    def __init__(self):
+    def __init__(self, client=None):
         """Initialize Quantum client class based on flags."""
-        self.client = quantum_client.Client(FLAGS.quantum_connection_host,
+        if client:
+            self.client = client
+        else:
+            self.client = quantum_client.Client(FLAGS.quantum_connection_host,
                                             FLAGS.quantum_connection_port,
                                             format="json",
                                             logger=LOG)
@@ -94,7 +97,7 @@ class QuantumClientConnection(object):
            vNIC with the specified interface-id.
         """
         LOG.debug(_("Connecting interface %(interface_id)s to "
-                    "net %(net_id)s for %(tenant_id)s" % locals()))
+                    "net %(net_id)s for %(tenant_id)s") % locals())
         port_data = {'port': {'state': 'ACTIVE'}}
         for kw in kwargs:
             port_data['port'][kw] = kwargs[kw]
@@ -108,7 +111,7 @@ class QuantumClientConnection(object):
     def detach_and_delete_port(self, tenant_id, net_id, port_id):
         """Detach and delete the specified Quantum port."""
         LOG.debug(_("Deleting port %(port_id)s on net %(net_id)s"
-                    " for %(tenant_id)s" % locals()))
+                    " for %(tenant_id)s") % locals())
 
         self.client.detach_resource(net_id, port_id, tenant=tenant_id)
         self.client.delete_port(net_id, port_id, tenant=tenant_id)
@@ -127,23 +130,26 @@ class QuantumClientConnection(object):
             return None
 
         port_list_len = len(port_list)
-        if port_list_len != 1:
-            LOG.error("Expected single port with attachment "
-                 "%(attachment_id)s, found %(port_list_len)s" % locals())
-        if port_list_len >= 1:
+        if port_list_len == 1:
             return port_list[0]['id']
+        elif port_list_len > 1:
+            raise Exception("Expected single port with attachment "
+                 "%(attachment_id)s, found %(port_list_len)s" % locals())
         return None
 
     def get_attached_ports(self, tenant_id, network_id):
         rv = []
         port_list = self.client.list_ports(network_id, tenant=tenant_id)
         for p in port_list["ports"]:
-            port_id = p["id"]
-            port = self.client.show_port_attachment(network_id,
+            try:
+                port_id = p["id"]
+                port = self.client.show_port_attachment(network_id,
                                 port_id, tenant=tenant_id)
-            # Skip ports without an attachment
-            if "id" not in port["attachment"]:
-                continue
-            rv.append({'port-id': port_id, 'attachment':
-                       port["attachment"]["id"]})
+                # Skip ports without an attachment
+                if "id" not in port["attachment"]:
+                    continue
+                rv.append({'port-id': port_id,
+                           'attachment': port["attachment"]["id"]})
+            except quantum_client.QuantumNotFoundException:
+                pass
         return rv
