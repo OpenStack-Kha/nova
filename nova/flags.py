@@ -189,7 +189,6 @@ global_opts = [
     cfg.StrOpt('network_topic',
                default='network',
                help='the topic network nodes listen on'),
-<<<<<<< HEAD
     cfg.StrOpt('vsa_topic',
                default='vsa',
                help='the topic that nova-vsa service listens on'),
@@ -205,14 +204,12 @@ global_opts = [
     cfg.ListOpt('rabbit_addresses',
                default=['localhost:5672'],
                help='RabbitMQ cluster host:port pairs'),
-=======
     cfg.StrOpt('rabbit_host',
                default='localhost',
                help='the RabbitMQ host'),
     cfg.IntOpt('rabbit_port',
                default=5672,
                help='the RabbitMQ port'),
->>>>>>> source/stable/essex
     cfg.BoolOpt('rabbit_use_ssl',
                 default=False,
                 help='connect over SSL for RabbitMQ'),
