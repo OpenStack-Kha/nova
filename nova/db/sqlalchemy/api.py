@@ -482,8 +482,12 @@ def compute_node_get_by_host(context, host):
     """Get all capacity entries for the given host."""
     session = get_session()
     with session.begin():
+#        node = session.query(models.ComputeNode).\
+#                             options(joinedload('service')).\
+#                             filter(models.Service.host == host).\
+#                             filter_by(deleted=False)
         node = session.query(models.ComputeNode).\
-                             options(joinedload('service')).\
+                             join(models.Service).\
                              filter(models.Service.host == host).\
                              filter_by(deleted=False)
         return node.first()
