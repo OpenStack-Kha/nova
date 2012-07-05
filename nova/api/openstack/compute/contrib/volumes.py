@@ -573,7 +573,7 @@ class Volumes(extensions.ExtensionDescriptor):
     """Volumes support"""
 
     name = "Volumes"
-    alias = "volumes"
+    alias = "os-volumes"
     namespace = "http://docs.openstack.org/compute/ext/volumes/api/v1.1"
     updated = "2011-03-25T00:00:00+00:00"
 
@@ -582,7 +582,7 @@ class Volumes(extensions.ExtensionDescriptor):
 
         # NOTE(justinsb): No way to provide singular name ('volume')
         # Does this matter?
-        res = extensions.ResourceExtension('volumes',
+        res = extensions.ResourceExtension('os-volumes',
                                         VolumeController(),
                                         collection_actions={'detail': 'GET'})
         resources.append(res)
