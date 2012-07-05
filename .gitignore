@@ -1,6 +1,8 @@
 *.pyc
 *.DS_Store
 local_settings.py
+Authors
+AUTHORS
 ChangeLog
 MANIFEST
 CA/
@@ -9,7 +11,6 @@ instances
 keys
 build/*
 build-stamp
-nova.egg-info
 .nova-venv
 .venv
 .tox
@@ -26,3 +27,4 @@ nova/vcsversion.py
 dist/*
 .coverage
 covhtml
+*.egg*
