@@ -5296,3 +5296,64 @@ def task_log_end_task(context, task_name,
         task.errors = errors
         task.save(session=session)
     return task
+
+
+##################
+
+
+@require_admin_context
+def security_zone_add(context, zone_name):
+    session = get_session()
+    query_zone = model_query(context, models.SecurityZone, session,
+                read_deleted='no').filter(models.SecurityZone.name == zone_name)
+    if not query_zone.first():
+        query_zone = models.SecurityZone()
+        values = {"name": zone_name}
+        query_zone.update(values)
+        query_zone.save(session=session)
+    else:
+        raise exception.NovaException("SecurityZone %s already exists", zone_name)
+    #return query_zone
+
+
+@require_admin_context
+def security_zone_delete(context, zone_name):
+    query_zone = model_query(context, models.SecurityZone, read_deleted='no').\
+        filter(models.SecurityZone.name == zone_name)
+    if query_zone.first():
+        query_zone.update({'deleted': True,
+                      'deleted_at': timeutils.utcnow(),
+                      'updated_at': literal_column('updated_at')})
+    else:
+        raise exception.NovaException("SecurityZone %s does not exist", zone_name)
+
+
+def security_zone_get_all(context):
+    return model_query(context, models.SecurityZone, read_deleted='no').all()
+
+
+def security_zone_exists(context, zone_name):
+    query_zone = model_query(context, models.SecurityZone, read_deleted='no').\
+        filter(models.SecurityZone.name == zone_name).first()
+    return True if query_zone else False
+
+
+def security_zones_add_host(context, zone_name, host_name):
+    session = get_session()
+    query_zone = model_query(context, models.SecurityZone, read_deleted='no').\
+        filter(models.SecurityZone.name == zone_name).first()
+    if query_zone:
+        query_zones = model_query(context, models.SecurityZones, read_deleted='no').\
+            filter(models.SecurityZones.host == host_name).first()
+        if not query_zones:
+            add_zone_host = models.SecurityZones()
+            values = {"zone_id": query_zone['id'], "host": host_name}
+            add_zone_host.update(values)
+            add_zone_host.save(session=session)
+        else:
+            raise exception.NovaException("Host %s is attached to a security zone already", host_name)
+    else:
+        raise exception.NovaException("SecurityZone %s does not exist", zone_name)
+    #return add_zone_host
+
+

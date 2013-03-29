@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import ForeignKey, DateTime, Boolean, Text, Float
 from sqlalchemy.orm import relationship, backref, object_mapper
+from gnomevfs._gnomevfs import is_primary_thread
 
 from nova.db.sqlalchemy.session import get_session
 from nova import exception
@@ -1016,3 +1017,25 @@ class TaskLog(BASE, NovaBase):
     message = Column(String(255), nullable=False)
     task_items = Column(Integer(), default=0)
     errors = Column(Integer(), default=0)
+
+
+class SecurityZone(BASE, NovaBase):
+    """Security zones description.
+    Security zone is an additional entity that can dynamically aggregate
+    groups of hosts by some name.
+    Relation between security zones and hosts - one to many."""
+    __tablename__ = 'security_zone'
+    id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
+    name = Column(String(255), unique=True)
+
+
+class SecurityZones(BASE, NovaBase):
+    """Security zones description.
+    Security zone is an additional entity that can dynamically aggregate
+    groups of hosts by some name.
+    Relation between security zones and hosts - one to many."""
+    __tablename__ = 'security_zones'
+    id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
+    zone_id = Column(Integer, ForeignKey('security_zone.id'),
+                  nullable=False, unique=False)
+    host = Column(String(255) , unique=True)
