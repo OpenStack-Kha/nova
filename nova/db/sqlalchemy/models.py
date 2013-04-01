@@ -1019,23 +1019,29 @@ class TaskLog(BASE, NovaBase):
     errors = Column(Integer(), default=0)
 
 
-class SecurityZone(BASE, NovaBase):
-    """Security zones description.
-    Security zone is an additional entity that can dynamically aggregate
-    groups of hosts by some name.
-    Relation between security zones and hosts - one to many."""
-    __tablename__ = 'security_zone'
+class ComputeZone(BASE, NovaBase):
+    """Compute zone description.
+    Compute zone is an additional entity that can dynamically aggregate
+    compute nodes by some name.
+    Relation between compute zones and compute nodes - many to many."""
+    __tablename__ = 'compute_zone'
     id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
-    name = Column(String(255), unique=True)
+    name = Column(String(255))
 
 
-class SecurityZones(BASE, NovaBase):
-    """Security zones description.
-    Security zone is an additional entity that can dynamically aggregate
-    groups of hosts by some name.
-    Relation between security zones and hosts - one to many."""
-    __tablename__ = 'security_zones'
+class ComputeNodesToZones(BASE, NovaBase):
+    """Compute nodes to compute zones mapping.
+    Relation between compute zones and compute nodes - many to many."""
+    __tablename__ = 'compute_nodes_to_zones'
     id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
-    zone_id = Column(Integer, ForeignKey('security_zone.id'),
-                  nullable=False, unique=False)
-    host = Column(String(255) , unique=True)
+    zone_id = Column(Integer, ForeignKey('compute_zone.id'), nullable=False)
+    zone = relationship(ComputeZone, primaryjoin='and_('
+                                       'ComputeNodesToZones.id == ComputeZone.id,'
+                                       'ComputeNodesToZones.deleted == False),'
+                                       'ComputeZone.deleted == False')
+    node_id = Column(Integer, ForeignKey('compute_nodes.id'), nullable=False)
+    node = relationship(ComputeNode, primaryjoin='and_('
+                                       'ComputeNodesToZones.id == ComputeNode.id,'
+                                       'ComputeNodesToZones.deleted == False),'
+                                       'ComputeNode.deleted == False')
+

@@ -27,26 +27,26 @@ def upgrade(migrate_engine):
     meta.bind = migrate_engine
 
     # New table
-    security_zone = Table('security_zone', meta,
+    compute_zone = Table('compute_zone', meta,
                           Column('created_at', DateTime(timezone=False)),
                           Column('updated_at', DateTime(timezone=False)),
                           Column('deleted_at', DateTime(timezone=False)),
                           Column('deleted', Boolean(create_constraint=True, name=None)),
                           Column('id', Integer(), primary_key=True, nullable=False),
-                          Column('name', String(length=255), unique=True, nullable=False),
+                          Column('name', String(length=255), nullable=False),
                           )
     # New table
-    security_zones = Table('security_zones', meta,
+    compute_nodes_to_zones = Table('compute_nodes_to_zones', meta,
                            Column('created_at', DateTime(timezone=False)),
                            Column('updated_at', DateTime(timezone=False)),
                            Column('deleted_at', DateTime(timezone=False)),
                            Column('deleted', Boolean(create_constraint=True, name=None)),
                            Column('id', Integer(), primary_key=True, nullable=False),
-                           Column('zone_id', Integer(), index=True, unique=False, nullable=False),
-                           Column('host', String(length=255), unique=True, nullable=False),
+                           Column('zone_id', Integer(), index=True, nullable=False),
+                           Column('node_id', Integer(), index=True, nullable=False),
                            )
 
-    tables = [security_zone, security_zones]
+    tables = [compute_zone, compute_nodes_to_zones]
 
     for table in tables:
         try:
@@ -60,10 +60,10 @@ def downgrade(migrate_engine):
     meta = MetaData()
     meta.bind = migrate_engine
 
-    security_zone = Table('security_zone', meta, autoload=True)
-    security_zones = Table('security_zones', meta, autoload=True)
+    compute_zone = Table('compute_zone', meta, autoload=True)
+    compute_nodes_to_zones = Table('compute_nodes_to_zones', meta, autoload=True)
 
-    tables = [security_zone, security_zones]
+    tables = [compute_zone, compute_nodes_to_zones]
 
     for table in tables:
         try:
