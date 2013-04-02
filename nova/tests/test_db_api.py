@@ -1010,6 +1010,48 @@ class CapacityTestCase(test.TestCase):
         self.assertEqual(num_instance_stat['key'], stat['key'])
         self.assertEqual(1, int(stat['value']))
 
+    def test_compute_zone_add(self):
+        zone = db.compute_zone_add(self.ctxt, 'test_compute_zone')
+        self.assertEqual('test_compute_zone', zone['name'])
+
+    def test_compute_zone_list(self):
+        db.compute_zone_add(self.ctxt, 'test_compute_zone_1')
+        zone_list = db.compute_zone_get_all(self.ctxt)
+        self.assertEqual(1, len(zone_list))
+        zone1 = zone_list[0]
+        self.assertEqual('test_compute_zone_1', zone1['name'])
+        db.compute_zone_add(self.ctxt, 'test_compute_zone_2')
+        zone_list = db.compute_zone_get_all(self.ctxt)
+        self.assertEqual(2, len(zone_list))
+
+    def test_compute_zone_delete(self):
+        zone = db.compute_zone_add(self.ctxt, 'test_compute_zone')
+        db.compute_zone_delete(self.ctxt, zone['id'])
+        exists = db.compute_zone_exists(self.ctxt, 'test_compute_zone')
+        self.assertEqual(False, exists)
+        zone_list = db.compute_zone_get_all(self.ctxt)
+        self.assertEqual(0, len(zone_list))
+
+    def test_compute_zone_add_node(self):
+        zone = db.compute_zone_add(self.ctxt, 'test_compute_zone')
+        node = self._create_helper('test_compute_node')
+        node_to_zone = db.compute_zone_add_node(self.ctxt, zone['id'], node['id'])
+        self.assertEqual(node['id'], node_to_zone['node_id'])
+        self.assertEqual(zone['id'], node_to_zone['zone_id'])
+        zone_has_node = db.compute_zone_has_node(self.ctxt, zone['id'], node['id'])
+        self.assertEqual(True, zone_has_node)
+
+
+    def test_compute_zone_node_list(self):
+        zone = db.compute_zone_add(self.ctxt, 'test_compute_zone')
+        node = self._create_helper('test_compute_node')
+        db.compute_zone_add_node(self.ctxt, zone['id'], node['id'])
+        zone_nodes = db.compute_zone_get_nodes(self.ctxt, zone['id'])
+        self.assertEqual(1, len(zone_nodes))
+        node1 = zone_nodes[0]
+        self.assertEqual(node['id'], node1['node_id'])
+        self.assertEqual(zone['id'], node1['zone_id'])
+
 
 class TestIpAllocation(test.TestCase):
 
