@@ -1927,3 +1927,44 @@ def task_log_get(context, task_name, period_beginning,
                  period_ending, host, state=None, session=None):
     return IMPL.task_log_get(context, task_name, period_beginning,
                  period_ending, host, state, session)
+
+
+####################
+
+
+def compute_zone_add(context, zone_name):
+    return IMPL.compute_zone_add(context, zone_name)
+
+
+def compute_zone_delete(context, zone_name):
+    return IMPL.compute_zone_delete(context, zone_name)
+
+
+def compute_zone_get_all(context):
+    return IMPL.compute_zone_get_all(context)
+
+
+def compute_zone_exists(context, zone_name):
+    return IMPL.compute_zone_exists(context, zone_name)
+
+
+def compute_zone_add_node(context, zone_id, node_id):
+    return IMPL.compute_zone_add_node(context, zone_id, node_id)
+
+
+def compute_zone_remove_node(context, zone_id, node_id):
+    return IMPL.compute_zone_remove_node(context, zone_id, node_id)
+
+
+def compute_zone_get_nodes(context, zone_id):
+    return IMPL.compute_zone_get_nodes(context, zone_id)
+
+
+def compute_node_get_zones(context, node_id):
+    return IMPL.compute_node_get_zones(context, node_id)
+
+
+def compute_zone_has_node(context, zone_id, node_id):
+    return IMPL.compute_zone_has_node(context, zone_id, node_id)
+
+

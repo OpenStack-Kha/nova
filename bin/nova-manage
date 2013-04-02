@@ -1250,6 +1250,51 @@ class GetLogCommands(object):
             print "No nova entries in syslog!"
 
 
+class ComputeZoneCommands(object):
+    """ """
+
+    def zone_add(self, name):
+        try:
+            return db.compute_zone_add(context.get_admin_context(), name)
+        except exception.DBError, e:
+            _db_error(e)
+
+
+    def zone_list(self):
+        try:
+            return db.compute_zone_get_all(context.get_admin_context())
+        except exception.DBError, e:
+            _db_error(e)
+
+
+    def zone_delete(self, name):
+        try:
+            db.compute_zone_delete(context.get_admin_context(), name)
+        except exception.DBError, e:
+            _db_error(e)
+
+
+    def node_add(self, zone_id, node_id):
+        try:
+            return db.compute_zone_add_node(context.get_admin_context(), zone_id, node_id)
+        except exception.DBError, e:
+            _db_error(e)
+
+
+    def node_list(self, zone_id):
+        try:
+            return db.compute_zone_get_nodes(context.get_admin_context(), zone_id)
+        except exception.DBError, e:
+            _db_error(e)
+
+
+    def node_remove(self, zone_id, node_id):
+        try:
+            db.compute_zone_remove_node(context.get_admin_context(), zone_id, node_id)
+        except exception.DBError, e:
+            _db_error(e)
+
+
 CATEGORIES = [
     ('account', AccountCommands),
     ('agent', AgentBuildCommands),
@@ -1270,6 +1315,7 @@ CATEGORIES = [
     ('vm', VmCommands),
     ('volume', VolumeCommands),
     ('vpn', VpnCommands),
+    ('compute_zone', ComputeZoneCommands),
 ]
 
 
