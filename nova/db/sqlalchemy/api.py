@@ -5301,6 +5301,12 @@ def task_log_end_task(context, task_name,
 ##################
 
 
+def mark_deleted(query):
+    query.update({'deleted': True,
+                  'deleted_at': timeutils.utcnow(),
+                  'updated_at': literal_column('updated_at')})
+
+
 @require_admin_context
 def compute_zone_add(context, zone_name):
     if not compute_zone_exists(context, zone_name):
@@ -5310,26 +5316,25 @@ def compute_zone_add(context, zone_name):
         add_zone.update(values)
         add_zone.save(session=session)
     else:
-        raise exception.NovaException("Compute zone %s already exists", zone_name)
+        raise exception.NovaException("Compute zone %s already exists" %
+                                      zone_name)
     return add_zone
 
 
 @require_admin_context
 def compute_zone_delete(context, zone_name):
-    query_zone = model_query(context, models.ComputeZone).\
-        filter(models.ComputeZone.name == zone_name).first()
-    if query_zone:
+    query_zone = model_query(context, models.ComputeZone, read_deleted='no').\
+        filter(models.ComputeZone.name == zone_name)
+    if query_zone.first():
+        zone_id = query_zone.first()['id']
         query_zone_nodes = model_query(context, models.ComputeNodesToZones). \
-            filter(models.ComputeNodesToZones.zone_id == query_zone['id'])
+            filter(models.ComputeNodesToZones.zone_id == zone_id)
         if query_zone_nodes.first():
-            query_zone_nodes.update({'deleted': True,
-                                     'deleted_at': timeutils.utcnow(),
-                                     'updated_at': literal_column('updated_at')})
-        query_zone.update({'deleted': True,
-                           'deleted_at': timeutils.utcnow(),
-                           'updated_at': literal_column('updated_at')})
+            mark_deleted(query_zone_nodes)
+        mark_deleted(query_zone.first())
     else:
-        raise exception.NovaException("Compute zone %s does not exist", zone_name)
+        raise exception.NovaException("Compute zone %s does not exist" %
+                                      zone_name)
 
 
 def compute_zone_get_all(context):
@@ -5337,7 +5342,7 @@ def compute_zone_get_all(context):
 
 
 def compute_zone_exists(context, zone_name):
-    query_zone = model_query(context, models.ComputeZone).\
+    query_zone = model_query(context, models.ComputeZone, read_deleted='no').\
         filter(models.ComputeZone.name == zone_name).first()
     return query_zone is not None
 
@@ -5355,11 +5360,15 @@ def compute_zone_add_node(context, zone_id, node_id):
             add_zone_node.update(values)
             add_zone_node.save(session=session)
         else:
-            raise exception.NovaException("Compute node %s is attached to a compute zone %s already", node_id, zone_id)
+            raise exception.NovaException(
+                "Compute node %s is attached to a compute zone %s already" %
+                (node_id, zone_id))
     elif not query_zone:
-        raise exception.NovaException("Compute zone %s does not exist", zone_id)
+        raise exception.NovaException("Compute zone %s does not exist" %
+                                      zone_id)
     elif not query_node:
-        raise exception.NovaException("Compute node %s does not exist", node_id)
+        raise exception.NovaException("Compute node %s does not exist" %
+                                      node_id)
     return add_zone_node
 
 
@@ -5368,11 +5377,11 @@ def compute_zone_remove_node(context, zone_id, node_id):
         filter(models.ComputeNodesToZones.zone_id == zone_id). \
         filter(models.ComputeNodesToZones.node_id == node_id).first()
     if query_zone_node:
-        query_zone_node.update({'deleted': True,
-                                'deleted_at': timeutils.utcnow(),
-                                'updated_at': literal_column('updated_at')})
+        mark_deleted(query_zone_node)
     else:
-        raise exception.NovaException("Compute node %s is not attached to a compute zone %s", node_id, zone_id)
+        raise exception.NovaException(
+            "Compute node %s is not attached to a compute zone %s" %
+            (node_id, zone_id))
 
 
 def compute_zone_get_nodes(context, zone_id):

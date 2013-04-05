@@ -1035,13 +1035,18 @@ class ComputeNodesToZones(BASE, NovaBase):
     __tablename__ = 'compute_nodes_to_zones'
     id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
     zone_id = Column(Integer, ForeignKey('compute_zone.id'), nullable=False)
-    zone = relationship(ComputeZone, primaryjoin='and_('
-                                       'ComputeNodesToZones.id == ComputeZone.id,'
-                                       'ComputeNodesToZones.deleted == False),'
-                                       'ComputeZone.deleted == False')
+    zone = relationship(ComputeZone,
+                        #backref=backref('compute_nodes_to_zones'),
+                        #foreign_keys=zone_id,
+                        primaryjoin='and_('
+                                    'ComputeNodesToZones.zone_id == ComputeZone.id,'
+                                    'ComputeNodesToZones.deleted == False,'
+                                    'ComputeZone.deleted == False)')
     node_id = Column(Integer, ForeignKey('compute_nodes.id'), nullable=False)
-    node = relationship(ComputeNode, primaryjoin='and_('
-                                       'ComputeNodesToZones.id == ComputeNode.id,'
-                                       'ComputeNodesToZones.deleted == False),'
-                                       'ComputeNode.deleted == False')
-
+    node = relationship(ComputeNode,
+                        #backref=backref('compute_nodes_to_zones'),
+                        #foreign_keys=node_id,
+                        primaryjoin='and_('
+                                    'ComputeNodesToZones.node_id == ComputeNode.id,'
+                                    'ComputeNodesToZones.deleted == False,'
+                                    'ComputeNode.deleted == False)')

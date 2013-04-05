@@ -1251,48 +1251,44 @@ class GetLogCommands(object):
 
 
 class ComputeZoneCommands(object):
-    """ """
+    """Compute zone management"""
 
     def zone_add(self, name):
         try:
             return db.compute_zone_add(context.get_admin_context(), name)
-        except exception.DBError, e:
-            _db_error(e)
-
+        except exception.NovaException, e:
+            print e
 
     def zone_list(self):
-        try:
-            return db.compute_zone_get_all(context.get_admin_context())
-        except exception.DBError, e:
-            _db_error(e)
-
+        print "%-20s %s" % ('ID', 'NAME')
+        print '--------------------------------------'
+        for zone in db.compute_zone_get_all(context.get_admin_context()):
+            print "%-20s %s" % (zone.id, zone.name)
 
     def zone_delete(self, name):
         try:
             db.compute_zone_delete(context.get_admin_context(), name)
-        except exception.DBError, e:
-            _db_error(e)
-
+        except exception.NovaException, e:
+            print e
 
     def node_add(self, zone_id, node_id):
         try:
             return db.compute_zone_add_node(context.get_admin_context(), zone_id, node_id)
-        except exception.DBError, e:
-            _db_error(e)
-
+        except exception.NovaException, e:
+            print e
 
     def node_list(self, zone_id):
-        try:
-            return db.compute_zone_get_nodes(context.get_admin_context(), zone_id)
-        except exception.DBError, e:
-            _db_error(e)
-
+        print "Zone %s node list" % zone_id
+        print "%-20s %s" % ('ID', 'HOST_NAME')
+        print '--------------------------------------'
+        for node in db.compute_zone_get_nodes(context.get_admin_context(), zone_id):
+            print "%-20i %s" % (node.node_id, node.node.hypervisor_hostname)
 
     def node_remove(self, zone_id, node_id):
         try:
             db.compute_zone_remove_node(context.get_admin_context(), zone_id, node_id)
-        except exception.DBError, e:
-            _db_error(e)
+        except exception.NovaException, e:
+            print e
 
 
 CATEGORIES = [

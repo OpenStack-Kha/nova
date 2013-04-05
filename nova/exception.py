@@ -69,6 +69,7 @@ def wrap_db_error(f):
         except UnicodeEncodeError:
             raise InvalidUnicodeParameter()
         except Exception, e:
+            raise
             LOG.exception(_('DB exception wrapped.'))
             raise DBError(e)
     _wrap.func_name = f.func_name
