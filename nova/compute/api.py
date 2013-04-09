@@ -2720,3 +2720,43 @@ class SecurityGroupAPI(base.Base):
     @staticmethod
     def raise_not_found(msg):
         raise NotImplementedError()
+
+
+class ComputeZoneAPI(base.Base):
+    """
+    Sub-set of the Compute API related to managing of compute zones
+    """
+
+    def __init__(self, **kwargs):
+        super(ComputeZoneAPI, self).__init__(**kwargs)
+
+    def create(self, context, name):
+        """Create a compute zone"""
+        LOG.audit(_("Create Compute Zone %s"), name, context=context)
+        return self.db.compute_zone_add(context, name)
+
+    def delete(self, context, name):
+        """Delete compute zone and remove (detach) all compute nodes
+        attached to the compute zone"""
+        LOG.audit(_("Delete compute zone %s"), name, context=context)
+        self.db.compute_zone_delete(context, name)
+
+    def list(self, context):
+        """List all compute zones"""
+        return self.db.compute_zone_get_all(context)
+
+    def add_node(self, context, zone_id, node_id):
+        """Add compute node to the compute zone"""
+        return self.db.compute_zone_add_node(context, zone_id, node_id)
+
+    def remove_node(self, context, zone_id, node_id):
+        """Remove (detach) compute node attached to the compute zone"""
+        self.db.compute_zone_remove_node(context, zone_id, node_id)
+
+    def list_nodes(self, context, zone_id):
+        """List all compute nodes attached to the compute zone"""
+        return self.db.compute_zone_get_nodes(context, zone_id)
+
+    def has_node(self, context, zone_id, node_id):
+        """Checks whether the compute node attached to the compute zone"""
+        return self.db.compute_zone_has_node(context, zone_id, node_id)
