@@ -87,7 +87,7 @@ class ComputeZoneController(object):
         return webob.Response(status_int=202)
 
     @wsgi.serializers(xml=ComputeZonesTemplate)
-    def index(self, req):
+    def list(self, req):
         """List all compute zones"""
         context = req.environ['nova.context']
         authorize(context)
@@ -120,8 +120,8 @@ class ComputeZoneController(object):
             raise webob.exc.HTTPInternalServerError(message=exc.message)
 
     @wsgi.serializers(xml=ComputeNodesTemplate)
-    def index_nodes(self, req, zone_id):
-        """List all compute zones"""
+    def list_nodes(self, req, zone_id):
+        """List all nodes in given compute zone"""
         context = req.environ['nova.context']
         authorize(context)
         nodes = self.api.list_nodes(context, zone_id)
