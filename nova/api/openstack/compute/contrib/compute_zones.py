@@ -18,8 +18,8 @@ from nova.openstack.common import log as logging
 
 
 LOG = logging.getLogger(__name__)
-authorize = extensions.extension_authorizer('compute', 'compute_zones')
-#soft_authorize = extensions.soft_extension_authorizer('compute', 'compute_zones')
+authorize = extensions.extension_authorizer('compute', 'computezones')
+#soft_authorize = extensions.soft_extension_authorizer('compute', 'computezones')
 
 
 class ComputeZoneTemplate(xmlutil.TemplateBuilder):
