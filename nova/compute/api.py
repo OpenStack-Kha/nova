@@ -2733,7 +2733,10 @@ class ComputeZoneAPI(base.Base):
     def create(self, context, name):
         """Create a compute zone"""
         LOG.audit(_("Create Compute Zone %s"), name, context=context)
-        return self.db.compute_zone_add(context, name)
+        if self.db.compute_zone_add(context, name):
+            zone = {'user_id': context.user_id,
+                    'name': name}
+            return zone
 
     def delete(self, context, name):
         """Delete compute zone and remove (detach) all compute nodes

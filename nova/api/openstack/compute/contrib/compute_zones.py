@@ -62,10 +62,13 @@ class ComputeZoneController(object):
         self.api = compute_api.ComputeZoneAPI()
 
     @wsgi.serializers(xml=ComputeZoneTemplate)
-    def create(self, req, name):
+    def create(self, req, body):
         """Create new compute zone"""
         context = req.environ['nova.context']
         authorize(context)
+
+        params = body['compute_zone']
+        name = params['name']
         try:
             zone = self.api.create(context, name)
             return {'compute_zone': zone}
@@ -73,30 +76,33 @@ class ComputeZoneController(object):
             #msg = _("Compute zone '%s' already exists.") % name
             raise webob.exc.HTTPInternalServerError(explanation=exc.message)
 
-    def delete(self, req, name):
+    def delete(self, req, id):
         """
         Delete compute zone and remove (detach) all compute nodes
         attached to the compute zone
         """
         context = req.environ['nova.context']
         authorize(context)
+
+        #params = body['compute_zone']
+        #name = params['name']
         try:
-            self.api.delete(context, name)
+            self.api.delete(context, id)
         except exception.NovaException as exc:
             raise webob.exc.HTTPInternalServerError(message=exc.message)
         return webob.Response(status_int=202)
 
     @wsgi.serializers(xml=ComputeZonesTemplate)
-    def list(self, req):
+    def index(self, req):
         """List all compute zones"""
         context = req.environ['nova.context']
         authorize(context)
         zones = self.api.list(context)
         zone_list = []
         for zone in zones:
-            zone_list.append({'compute_zone': {
+            zone_list.append({
                 'name': zone['name'],
-                }})
+                })
         return {'compute_zones': zone_list}
 
     @wsgi.serializers(xml=ComputeNodeToZoneTemplate)
@@ -139,7 +145,7 @@ class ComputeZoneController(object):
         return self.db.has_node(context, zone_id, node_id)
 
 
-class ComputeZones(extensions.ExtensionDescriptor):
+class Compute_zones(extensions.ExtensionDescriptor):
     """Compute zone support"""
 
     name = "ComputeZones"
@@ -148,7 +154,7 @@ class ComputeZones(extensions.ExtensionDescriptor):
     updated = "2013-04-09T00:00:00+00:00"
 
     def get_resources(self):
-        res = extensions.ResourceExtension(
-            'os-computezones',
-            ComputeZoneController())
+        res = [extensions.ResourceExtension(
+               'os-computezones',
+               ComputeZoneController())]
         return res
