@@ -19,18 +19,19 @@ from nova.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)
 authorize = extensions.extension_authorizer('compute', 'computezones')
-#soft_authorize = extensions.soft_extension_authorizer('compute', 'computezones')
 
 
 class ComputeZoneTemplate(xmlutil.TemplateBuilder):
     def construct(self):
-        return xmlutil.MasterTemplate(xmlutil.make_flat_dict('compute_zone'), 1)
+        return xmlutil.MasterTemplate(xmlutil.make_flat_dict(
+            'compute_zone'), 1)
 
 
 class ComputeZonesTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('compute_zones')
-        elem = xmlutil.make_flat_dict('compute_zone', selector='compute_zones',
+        elem = xmlutil.make_flat_dict('compute_zone',
+                                      selector='compute_zones',
                                       subselector='compute_zone')
         root.append(elem)
         return xmlutil.MasterTemplate(root, 1)
@@ -38,13 +39,15 @@ class ComputeZonesTemplate(xmlutil.TemplateBuilder):
 
 class ComputeNodeTemplate(xmlutil.TemplateBuilder):
     def construct(self):
-        return xmlutil.MasterTemplate(xmlutil.make_flat_dict('compute_node'), 1)
+        return xmlutil.MasterTemplate(xmlutil.make_flat_dict(
+            'compute_node'), 1)
 
 
 class ComputeNodesTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('compute_nodes')
-        elem = xmlutil.make_flat_dict('compute_node', selector='compute_nodes',
+        elem = xmlutil.make_flat_dict('compute_node',
+                                      selector='compute_nodes',
                                       subselector='compute_node')
         root.append(elem)
         return xmlutil.MasterTemplate(root, 1)
@@ -52,7 +55,8 @@ class ComputeNodesTemplate(xmlutil.TemplateBuilder):
 
 class ComputeNodeToZoneTemplate(xmlutil.TemplateBuilder):
     def construct(self):
-        return xmlutil.MasterTemplate(xmlutil.make_flat_dict('compute_node_to_zone'), 1)
+        return xmlutil.MasterTemplate(xmlutil.make_flat_dict(
+            'compute_node_to_zone'), 1)
 
 
 class ComputeZoneController(object):
@@ -101,48 +105,64 @@ class ComputeZoneController(object):
         zone_list = []
         for zone in zones:
             zone_list.append({
+                'id': zone['id'],
                 'name': zone['name'],
                 })
         return {'compute_zones': zone_list}
 
+    def action(self, req, id, body):
+        _actions = {
+            'add_node': self.add_node,
+            'remove_node': self.remove_node,
+            'list_nodes': self.list_nodes,
+            }
+        for action, data in body.iteritems():
+            try:
+                return _actions[action](req, id, data)
+            except KeyError:
+                msg = _("Aggregates does not have %s action") % action
+                raise webob.exc.HTTPBadRequest(explanation=msg)
+
+        raise webob.exc.HTTPBadRequest(explanation=_("Invalid request body"))
+
     @wsgi.serializers(xml=ComputeNodeToZoneTemplate)
-    def add_node(self, req, zone_id, node_id):
+    def add_node(self, req, id, body):
         """Add compute node to the compute zone"""
         context = req.environ['nova.context']
         authorize(context)
+        node = body['node']
         try:
-            node_to_zone = self.api.add_node(context, zone_id, node_id)
+            node_to_zone = self.api.add_node(context, id, node)
         except exception.NovaException as exc:
             raise webob.exc.HTTPInternalServerError(message=exc.message)
         return {'compute_node_to_zone': node_to_zone}
 
-    def remove_node(self, req, zone_id, node_id):
+    @wsgi.serializers(xml=ComputeNodeToZoneTemplate)
+    def remove_node(self, req, id, body):
         """Remove (detach) compute node attached to the compute zone"""
         context = req.environ['nova.context']
         authorize(context)
+        node = body['node']
         try:
-            self.api.remove_node(context, zone_id, node_id)
+            self.api.remove_node(context, id, node)
         except exception.NovaException as exc:
             raise webob.exc.HTTPInternalServerError(message=exc.message)
+        return {'compute_node_to_zone': None}
 
     @wsgi.serializers(xml=ComputeNodesTemplate)
-    def list_nodes(self, req, zone_id):
+    def list_nodes(self, req, id, body):
         """List all nodes in given compute zone"""
         context = req.environ['nova.context']
         authorize(context)
-        nodes = self.api.list_nodes(context, zone_id)
+        nodes = self.api.list_nodes(context, int(id))
         node_list = []
         for node in nodes:
-            node_list.append({'compute_node': {
-                'zone': node.zone['name'],
-                'id': node.node['id'],
-                'name': node.node['hypervisor_hostname'],
-                }})
+            node_list.append({
+                'zone_name': node.zone['name'],
+                'node_id': node.node['id'],
+                'node_name': node.node['hypervisor_hostname'],
+                })
         return {'compute_nodes': node_list}
-
-    def has_node(self, context, zone_id, node_id):
-        """Checks whether the compute node attached to the compute zone"""
-        return self.db.has_node(context, zone_id, node_id)
 
 
 class Compute_zones(extensions.ExtensionDescriptor):
@@ -154,7 +174,10 @@ class Compute_zones(extensions.ExtensionDescriptor):
     updated = "2013-04-09T00:00:00+00:00"
 
     def get_resources(self):
-        res = [extensions.ResourceExtension(
-               'os-computezones',
-               ComputeZoneController())]
-        return res
+        resources = []
+        res = extensions.ResourceExtension(
+            'os-computezones',
+            ComputeZoneController(),
+            member_actions={"action": "POST", })
+        resources.append(res)
+        return resources
