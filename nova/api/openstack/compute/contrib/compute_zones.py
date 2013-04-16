@@ -121,9 +121,9 @@ class ComputeZoneController(object):
                 return _actions[action](req, id, data)
             except KeyError:
                 msg = _("Aggregates does not have %s action") % action
-                raise webob.exc.HTTPBadRequest(explanation=msg)
+                raise webob.exc.HTTPBadRequest(message=msg)
 
-        raise webob.exc.HTTPBadRequest(explanation=_("Invalid request body"))
+        raise webob.exc.HTTPBadRequest(message=_("Invalid request body"))
 
     @wsgi.serializers(xml=ComputeNodeToZoneTemplate)
     def add_node(self, req, id, body):
@@ -154,14 +154,16 @@ class ComputeZoneController(object):
         """List all nodes in given compute zone"""
         context = req.environ['nova.context']
         authorize(context)
-        nodes = self.api.list_nodes(context, int(id))
+        nodes = self.api.list_nodes(context, id)
         node_list = []
         for node in nodes:
-            node_list.append({
+            node_descr = {
                 'zone_name': node.zone['name'],
                 'node_id': node.node['id'],
                 'node_name': node.node['hypervisor_hostname'],
-                })
+                }
+            node_list.append(node_descr)
+            #node_list.update({node.zone['name']: node_descr})
         return {'compute_nodes': node_list}
 
 

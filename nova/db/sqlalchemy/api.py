@@ -5347,13 +5347,13 @@ def compute_zone_exists(context, zone_name):
     return query_zone is not None
 
 
-def compute_zone_add_node(context, zone_id, node_id):
+def compute_zone_add_node_by_id(context, zone_id, node_id):
     query_zone = model_query(context, models.ComputeZone).\
         filter(models.ComputeZone.id == zone_id).first()
     query_node = model_query(context, models.ComputeNode). \
         filter(models.ComputeNode.id == node_id).first()
     if query_zone and query_node:
-        if not compute_zone_has_node(context, zone_id, node_id):
+        if not compute_zone_has_node_by_id(context, zone_id, node_id):
             session = get_session()
             add_zone_node = models.ComputeNodesToZones()
             values = {"zone_id": zone_id, "node_id": node_id}
@@ -5372,11 +5372,35 @@ def compute_zone_add_node(context, zone_id, node_id):
     return add_zone_node
 
 
-def compute_zone_remove_node(context, zone_id, node_id):
-    query_zone_node = model_query(context, models.ComputeNodesToZones). \
-        filter(models.ComputeNodesToZones.zone_id == zone_id). \
-        filter(models.ComputeNodesToZones.node_id == node_id).first()
-    if query_zone_node:
+def compute_zone_add_node_by_name(context, zone_name, node_name):
+    query_zone = model_query(context, models.ComputeZone). \
+        filter(models.ComputeZone.name == zone_name).first()
+    query_node = model_query(context, models.ComputeNode). \
+        filter(models.ComputeNode.hypervisor_hostname == node_name).first()
+    if query_zone and query_node:
+        if not compute_zone_has_node_by_name(context, zone_name, node_name):
+            session = get_session()
+            add_zone_node = models.ComputeNodesToZones()
+            values = {"zone_id": query_zone['id'], "node_id": query_node['id']}
+            add_zone_node.update(values)
+            add_zone_node.save(session=session)
+        else:
+            raise exception.NovaException(
+                "Compute node %s is attached to a compute zone %s already" %
+                (node_name, zone_name))
+    elif not query_zone:
+        raise exception.NovaException("Compute zone %s does not exist" %
+                                      zone_name)
+    elif not query_node:
+        raise exception.NovaException("Compute node %s does not exist" %
+                                      node_name)
+    return add_zone_node
+
+
+def compute_zone_remove_node_by_id(context, zone_id, node_id):
+    query_zone_node = compute_zone_has_node_by_id(context, zone_id, node_id,
+                                                  get_first=False)
+    if query_zone_node.first():
         mark_deleted(query_zone_node)
     else:
         raise exception.NovaException(
@@ -5384,9 +5408,36 @@ def compute_zone_remove_node(context, zone_id, node_id):
             (node_id, zone_id))
 
 
-def compute_zone_get_nodes(context, zone_id):
+def compute_zone_remove_node_by_name(context, zone_name, node_name):
+    query_zone_node = compute_zone_has_node_by_name(context,
+                                                    zone_name, node_name)
+    if query_zone_node:
+        remove_zone_node = model_query(context, models.ComputeNodesToZones). \
+            filter(models.ComputeNodesToZones.zone_id ==
+                   query_zone_node['zone_id']). \
+            filter(models.ComputeNodesToZones.node_id ==
+                   query_zone_node['node_id'])
+        if remove_zone_node.first():
+            mark_deleted(remove_zone_node)
+        else:
+            raise exception.NovaException(
+                "Compute node %s is attached to a compute zone %s" %
+                (node_name, zone_name))
+    else:
+        raise exception.NovaException(
+            "Compute node %s is not attached to a compute zone %s" %
+            (node_name, zone_name))
+
+
+def compute_zone_get_nodes_by_id(context, zone_id):
     return model_query(context, models.ComputeNodesToZones). \
         filter(models.ComputeNodesToZones.zone_id == zone_id).all()
+
+
+def compute_zone_get_nodes_by_name(context, zone_name):
+    return model_query(context, models.ComputeNodesToZones). \
+        join('zone'). \
+        filter(models.ComputeZone.name == zone_name).all()
 
 
 def compute_node_get_zones(context, node_id):
@@ -5394,9 +5445,18 @@ def compute_node_get_zones(context, node_id):
         filter(models.ComputeNodesToZones.node_id == node_id).all()
 
 
-def compute_zone_has_node(context, zone_id, node_id):
+def compute_zone_has_node_by_id(context, zone_id, node_id, get_first=True):
     query_zone_node = model_query(context, models.ComputeNodesToZones). \
         filter(models.ComputeNodesToZones.zone_id == zone_id). \
-        filter(models.ComputeNodesToZones.node_id == node_id).first()
-    return query_zone_node is not None
+        filter(models.ComputeNodesToZones.node_id == node_id)
+    return query_zone_node.first() if get_first else query_zone_node
+
+
+def compute_zone_has_node_by_name(context, zone_name, node_name):
+    query_zone_node = model_query(context, models.ComputeNodesToZones). \
+        join('zone'). \
+        join('node'). \
+        filter(models.ComputeZone.name == zone_name). \
+        filter(models.ComputeNode.hypervisor_hostname == node_name).first()
+    return query_zone_node
 

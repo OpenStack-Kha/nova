@@ -1948,16 +1948,19 @@ def compute_zone_exists(context, zone_name):
     return IMPL.compute_zone_exists(context, zone_name)
 
 
-def compute_zone_add_node(context, zone_id, node_id):
-    return IMPL.compute_zone_add_node(context, zone_id, node_id)
+def compute_zone_add_node(context, zone_name, node_name):
+    return IMPL.compute_zone_add_node_by_name(context, zone_name, node_name)
+    #return IMPL.compute_zone_add_node(context, zone_id, node_id)
 
 
-def compute_zone_remove_node(context, zone_id, node_id):
-    return IMPL.compute_zone_remove_node(context, zone_id, node_id)
+def compute_zone_remove_node(context, zone_name, node_name):
+    return IMPL.compute_zone_remove_node_by_name(context, zone_name, node_name)
+    #return IMPL.compute_zone_remove_node(context, zone_id, node_id)
 
 
-def compute_zone_get_nodes(context, zone_id):
-    return IMPL.compute_zone_get_nodes(context, zone_id)
+def compute_zone_get_nodes(context, zone_name):
+    return IMPL.compute_zone_get_nodes_by_name(context, zone_name)
+    #return IMPL.compute_zone_get_nodes(context, zone_id)
 
 
 def compute_node_get_zones(context, node_id):
