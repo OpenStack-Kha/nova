@@ -181,6 +181,23 @@ class ComputeNodeStat(BASE, NovaBase):
         return "{%d: %s = %s}" % (self.compute_node_id, self.key, self.value)
 
 
+class ComputeNodeComputeZoneAssociation(BASE, NovaBase):
+    __tablename__ = 'compute_node_compute_zone_association'
+    id = Column(Integer, primary_key=True)
+    compute_node_id = Column(Integer, ForeignKey('compute_nodes.id'))
+    compute_zone_id = Column(Integer, ForeignKey('compute_zones.id'))
+
+
+class ComputeZone(BASE, NovaBase):
+    """Compute zone is an additional entity that can dynamically aggregate compute nodes by some name."""
+    __tablename__ = 'compute_zones'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128))
+    compute_nodes = relationship(ComputeNode,
+                                secondary="compute_node_compute_zone_association",
+                                backref='compute_zones')
+
+
 class Certificate(BASE, NovaBase):
     """Represents a x509 certificate"""
     __tablename__ = 'certificates'

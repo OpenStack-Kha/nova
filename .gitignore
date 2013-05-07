@@ -14,6 +14,7 @@
 .ropeproject
 .tox
 .venv
+.idea/
 AUTHORS
 Authors
 build-stamp
