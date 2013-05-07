@@ -1250,6 +1250,31 @@ class GetLogCommands(object):
             print "No nova entries in syslog!"
 
 
+class ZoneCommands(object):
+    """ Commaands for working with compute zone
+    """
+    @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
+    @args('--node', dest='node', metavar='<node>', help='place compute node to compute zone if zone has been defined')
+    def add(self, zone=None, node=None):
+        print 'zone:"%s" \n'\
+              'node:"%s"' %(node, zone)
+
+
+    @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
+    @args('--node', dest='node', metavar='<node>', help='place compute node to compute zone if zone has been defined')
+    def list(self, zone=None, node=None):
+        print 'zone:"%s" \n'\
+              'node:"%s"' %(node, zone)
+
+
+    @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
+    @args('--node', dest='node', metavar='<node>', help='place compute node to compute zone if zone has been defined')
+    def delete(self, zone=None, node=None):
+        print 'zone:"%s" \n'\
+              'node:"%s"' %(node, zone)
+
+
+
 CATEGORIES = [
     ('account', AccountCommands),
     ('agent', AgentBuildCommands),
@@ -1270,6 +1295,7 @@ CATEGORIES = [
     ('vm', VmCommands),
     ('volume', VolumeCommands),
     ('vpn', VpnCommands),
+    ('zone', ZoneCommands),
 ]
 
 
