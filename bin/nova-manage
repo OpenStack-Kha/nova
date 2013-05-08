@@ -1254,24 +1254,36 @@ class ZoneCommands(object):
     """ Commaands for working with compute zone
     """
     @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
-    @args('--node', dest='node', metavar='<node>', help='place compute node to compute zone if zone has been defined')
-    def add(self, zone=None, node=None):
-        print 'zone:"%s" \n'\
-              'node:"%s"' %(node, zone)
+    @args('--node_id', dest='node_id', metavar='<node_id>', help='zone add [--zone <zone name> ] [--node_id <node id>]')
+    def add(self, zone, node_id=None):
+        """add zone or compute node per compute zone"""
+
+        if node_id:
+            db.compute_zone_add(context.get_admin_context(), zone, node_id)
+            print 'Add node:"%s"  to zone"%s"' % (node_id, zone)
+        else:
+            db.compute_zone_add(context.get_admin_context(), zone)
+            print 'Add zone"%s"' % zone
 
 
     @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
-    @args('--node', dest='node', metavar='<node>', help='place compute node to compute zone if zone has been defined')
-    def list(self, zone=None, node=None):
-        print 'zone:"%s" \n'\
-              'node:"%s"' %(node, zone)
+    def list(self, zone=None):
+        """list compute node per compute zone"""
+
+        print db.compute_zone_list(context.get_admin_context(), zone)
 
 
     @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
-    @args('--node', dest='node', metavar='<node>', help='place compute node to compute zone if zone has been defined')
-    def delete(self, zone=None, node=None):
-        print 'zone:"%s" \n'\
-              'node:"%s"' %(node, zone)
+    @args('--node_id', dest='node_id', metavar='<node_id>', help='zone delete [--zone <zone name> ] [--node <node id>]')
+    def delete(self, zone, node_id=None):
+        """delete zone or compute node per compute zone"""
+
+        if not node_id:
+            db.compute_zone_delete(context.get_admin_context(), zone)
+            print 'Delete zone"%s"' % zone
+        else:
+            db.compute_zone_delete(context.get_admin_context(), zone, node_id)
+            print 'Delete node:"%s" from zone"%s"' % (node_id, zone)
 
 
 

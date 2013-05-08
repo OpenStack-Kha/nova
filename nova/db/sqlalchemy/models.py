@@ -21,7 +21,7 @@
 SQLAlchemy models for nova data.
 """
 
-from sqlalchemy import Column, Integer, BigInteger, String, schema
+from sqlalchemy import Column, Integer, BigInteger, String, schema, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import ForeignKey, DateTime, Boolean, Text, Float
@@ -183,16 +183,17 @@ class ComputeNodeStat(BASE, NovaBase):
 
 class ComputeNodeComputeZoneAssociation(BASE, NovaBase):
     __tablename__ = 'compute_node_compute_zone_association'
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     compute_node_id = Column(Integer, ForeignKey('compute_nodes.id'))
     compute_zone_id = Column(Integer, ForeignKey('compute_zones.id'))
+    __table_args__ = (UniqueConstraint('compute_node_id', 'compute_zone_id', name='_zone_association_uc'),)
 
 
 class ComputeZone(BASE, NovaBase):
     """Compute zone is an additional entity that can dynamically aggregate compute nodes by some name."""
     __tablename__ = 'compute_zones'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(128))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), unique=True)
     compute_nodes = relationship(ComputeNode,
                                 secondary="compute_node_compute_zone_association",
                                 backref='compute_zones')

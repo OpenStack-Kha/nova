@@ -227,6 +227,23 @@ def compute_node_statistics(context):
 ###################
 
 
+def compute_zone_add(context, zone_name, compute_id=None):
+    """add zone or compute node per compute zone"""
+    return IMPL.compute_zone_add(context, zone_name, compute_id)
+
+
+def compute_zone_list(context, zone_name=None):
+    """list compute node per compute zone. Zone name is empty then get all list"""
+    return IMPL.compute_zone_list(context, zone_name)
+
+
+def compute_zone_delete(context, zone_name, compute_id=None):
+    """delete zone or compute node per compute zone"""
+    return IMPL.compute_zone_delete(context, zone_name, compute_id)
+
+###################
+
+
 def certificate_create(context, values):
     """Create a certificate from the values dictionary."""
     return IMPL.certificate_create(context, values)

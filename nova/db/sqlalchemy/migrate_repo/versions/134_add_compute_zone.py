@@ -16,7 +16,7 @@
 #    under the License.
 
 
-from sqlalchemy import MetaData, Integer, String, Table, Column, ForeignKey
+from sqlalchemy import MetaData, Integer, String, Table, Column, ForeignKey, DateTime, Boolean, UniqueConstraint
 
 def upgrade(migrate_engine):
     meta = MetaData()
@@ -24,14 +24,25 @@ def upgrade(migrate_engine):
     compute_node = Table('compute_nodes', meta, autoload=True)
     compute_zone = Table('compute_zones',
                      meta,
+                     Column('created_at', DateTime),
+                     Column('updated_at', DateTime),
+                     Column('deleted_at', DateTime),
+                     Column('deleted', Boolean),
                      Column('id', Integer, primary_key=True),
-                     Column('name', String(128)))
+                     Column('name', String(128), unique=True))
 
     compute_node_compute_zone_association = Table('compute_node_compute_zone_association',
                                               meta,
+                                              Column('created_at', DateTime),
+                                              Column('updated_at', DateTime),
+                                              Column('deleted_at', DateTime),
+                                              Column('deleted', Boolean),
                                               Column('id', Integer, primary_key=True),
                                               Column('compute_node_id', Integer, ForeignKey('compute_nodes.id')),
-                                              Column('compute_zone_id', Integer, ForeignKey('compute_zones.id')))
+                                              Column('compute_zone_id', Integer, ForeignKey('compute_zones.id')),
+                                              UniqueConstraint('compute_node_id', 'compute_zone_id',
+                                                               name='_zone_association_uc'))
+
 
     compute_zone.create()
     compute_node_compute_zone_association.create()
