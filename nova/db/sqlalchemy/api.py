@@ -634,11 +634,12 @@ def compute_node_statistics(context):
 @require_admin_context
 def compute_zone_add(context, zone_name, node_id=None):
     """add zone or compute node per compute zone"""
-    if not node_id:
+    if node_id is None:
         #add new zone
         zone_ref = models.ComputeZone()
         zone_ref.name = zone_name
         zone_ref.save()
+        zone_list = compute_zone_list(context)
     else:
         #place node to zone
         zone_association_ref = models.ComputeNodeComputeZoneAssociation()
@@ -649,8 +650,8 @@ def compute_zone_add(context, zone_name, node_id=None):
             first()[0]
         zone_association_ref.compute_node_id = node_id
         zone_association_ref.save()
-
-    return compute_zone_list(context)
+        zone_list = compute_zone_list(context, zone_name)
+    return zone_list
 
 
 def compute_zone_list(context, zone_name=None):
@@ -676,18 +677,19 @@ def compute_zone_list(context, zone_name=None):
 @require_admin_context
 def compute_zone_delete(context, zone_name, node_id=None):
     """delete zone or compute node per compute zone"""
-    compute_zone_id = model_query(context, models.ComputeZone.id).\
+    if node_id is not None:
+        compute_zone_id_record = model_query(context, models.ComputeZone.id).\
             filter(models.ComputeZone.deleted == False).\
             filter(models.ComputeZone.name == zone_name).\
-            first()[0]
+            first()
 
-    if not node_id:
-        model_query(context, models.ComputeNodeComputeZoneAssociation).\
-            filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id).\
-            delete()
-
+        if len(compute_zone_id_record) > 0:
+            model_query(context, models.ComputeNodeComputeZoneAssociation).\
+                filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id_record[0]).\
+                delete()
+    else:
         model_query(context, models.ComputeZone).\
-            filter(models.ComputeZone.id == compute_zone_id).\
+            filter(models.ComputeZone.name == zone_name).\
             delete()
 
 
