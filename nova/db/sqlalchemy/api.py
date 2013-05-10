@@ -650,7 +650,7 @@ def compute_zone_add(context, zone_name, node_id=None):
         zone_association_ref.compute_node_id = node_id
         zone_association_ref.save()
 
-    return compute_zone_list(context, zone_name)
+    return compute_zone_list(context)
 
 
 def compute_zone_list(context, zone_name=None):
@@ -679,15 +679,15 @@ def compute_zone_delete(context, zone_name, node_id=None):
     compute_zone_id = model_query(context, models.ComputeZone.id).\
             filter(models.ComputeZone.deleted == False).\
             filter(models.ComputeZone.name == zone_name).\
-            first()
+            first()[0]
 
     if not node_id:
         model_query(context, models.ComputeNodeComputeZoneAssociation).\
-            filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id[0]).\
+            filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id).\
             delete()
 
         model_query(context, models.ComputeZone).\
-            filter(models.ComputeZone.id == compute_zone_id[0]).\
+            filter(models.ComputeZone.id == compute_zone_id).\
             delete()
 
 
