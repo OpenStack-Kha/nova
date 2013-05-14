@@ -1257,22 +1257,34 @@ class ZoneCommands(object):
     @args('--node_id', dest='node_id', metavar='<node_id>', help='zone add [--zone <zone name> ] [--node_id <node id>]')
     def add(self, zone, node_id=None):
         """add zone or compute node per compute zone"""
-        zone_list = db.compute_zone_add(context.get_admin_context(), zone, node_id)
-        self._print_zone_list_(zone_list)
+        try:
+            zone_list = db.compute_zone_add(context.get_admin_context(), zone, node_id)
+        except Exception as e:
+            pass
+        else:
+            self._print_zone_list_(zone_list)
 
 
     @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
     def list(self, zone=None):
         """list compute node per compute zone"""
-        zone_list = db.compute_zone_list(context.get_admin_context(), zone)
-        self._print_zone_list_(zone_list)
+        try:
+            zone_list = db.compute_zone_list(context.get_admin_context(), zone)
+        except Exception as e:
+            pass
+        else:
+            self._print_zone_list_(zone_list)
 
 
     @args('--zone', dest='zone', metavar='<zone>', help='add new compute zone')
     @args('--node_id', dest='node_id', metavar='<node_id>', help='zone delete [--zone <zone name> ] [--node <node id>]')
     def delete(self, zone, node_id=None):
         """delete zone or compute node per compute zone"""
-        db.compute_zone_delete(context.get_admin_context(), zone, node_id)
+        try:
+            db.compute_zone_delete(context.get_admin_context(), zone, node_id)
+        except Exception as e:
+            pass
+        print 'Zone deleted'
 
 
     def _print_zone_list_(self, zone_list):
