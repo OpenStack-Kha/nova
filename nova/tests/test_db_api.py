@@ -907,7 +907,7 @@ class AggregateDBApiTestCase(test.TestCase):
                           db.aggregate_host_delete,
                           ctxt, result.id, _get_fake_aggr_hosts()[0])
 
-    def test_compute_zone_list_empty(self):
+    def test_compute_zone(self):
         """First test for zone list. For empty DB"""
         ctxt = context.get_admin_context()
         zone_list = db.compute_zone_list(ctxt)
@@ -915,9 +915,7 @@ class AggregateDBApiTestCase(test.TestCase):
         zone_list = db.compute_zone_list(ctxt, 'first zone')
         self.assertEqual(0, len(zone_list))
 
-    def test_compute_zone_add(self):
-        """Adding zone"""
-        ctxt = context.get_admin_context()
+        #add zone
         zone_list = db.compute_zone_add(ctxt, 'first zone')
         self.assertEqual(1, len(zone_list))
         zone_list = db.compute_zone_add(ctxt, 'second zone')
@@ -929,39 +927,31 @@ class AggregateDBApiTestCase(test.TestCase):
         zone_list = db.compute_zone_add(ctxt, 'third zone', 1)
         self.assertEqual(1, len(zone_list))
 
-    def test_compute_zone_list_second(self):
-        """Second test for zone list. For filled DB"""
-        ctxt = context.get_admin_context()
-        zone_list = db.compute_zone_add(ctxt, 'first zone')
-        zone_list = db.compute_zone_add(ctxt, 'second zone')
-        zone_list = db.compute_zone_add(ctxt, 'third zone')
-        zone_list = db.compute_zone_add(ctxt, 'first zone', 1)
-        zone_list = db.compute_zone_add(ctxt, 'third zone', 1)
-
         zone_list = db.compute_zone_list(ctxt)
         self.assertEqual(3, len(zone_list))
         zone_list = db.compute_zone_list(ctxt, 'first zone')
         self.assertEqual(1, len(zone_list))
+        zone_list = db.compute_zone_list(ctxt, 'third zone')
+        self.assertEqual(1, len(zone_list))
 
-    def test_compute_zone_delete(self):
-        """Deleting zone"""
-        ctxt = context.get_admin_context()
-        zone_list = db.compute_zone_add(ctxt, 'first zone')
-        zone_list = db.compute_zone_add(ctxt, 'second zone')
-        zone_list = db.compute_zone_add(ctxt, 'third zone')
-        zone_list = db.compute_zone_add(ctxt, 'first zone', 1)
-        zone_list = db.compute_zone_add(ctxt, 'third zone', 1)
+        #Deleting zone
+        db.compute_zone_delete(ctxt, 'second zone')
+        zone_list = db.compute_zone_list(ctxt)
+        self.assertEqual(2, len(zone_list))
 
-        # db.compute_zone_delete(ctxt, 'second zone')
-        # zone_list = db.compute_zone_list(ctxt)
-        # self.assertEqual(2, db.compute_zone_list(ctxt))
-        # db.compute_zone_delete(ctxt, 'first zone', 1)
-        # self.assertEqual(2, len(zone_list))
-        # db.compute_zone_delete(ctxt, 'third zone')
-        # self.assertEqual(2, len(zone_list))
-        # db.compute_zone_delete(ctxt, 'third zone', 1)
-        # db.compute_zone_delete(ctxt, 'third zone')
-        # self.assertEqual(2, len(zone_list))
+        # delete only association zone + node
+        db.compute_zone_delete(ctxt, 'first zone', 1)
+        zone_list = db.compute_zone_list(ctxt)
+        self.assertEqual(2, len(zone_list))
+
+        #delete zone totally
+        db.compute_zone_delete(ctxt, 'third zone')
+        zone_list = db.compute_zone_list(ctxt)
+        self.assertEqual(1, len(zone_list))
+
+        db.compute_zone_delete(ctxt, 'first zone')
+        zone_list = db.compute_zone_list(ctxt)
+        self.assertEqual(0, len(zone_list))
 
 
 class CapacityTestCase(test.TestCase):
