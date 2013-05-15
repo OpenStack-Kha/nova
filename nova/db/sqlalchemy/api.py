@@ -677,17 +677,22 @@ def compute_zone_list(context, zone_name=None):
 @require_admin_context
 def compute_zone_delete(context, zone_name, node_id=None):
     """delete zone or compute node per compute zone"""
-    if node_id is not None:
-        compute_zone_id_record = model_query(context, models.ComputeZone.id).\
+    compute_zone_id_record = model_query(context, models.ComputeZone.id).\
             filter(models.ComputeZone.deleted == False).\
             filter(models.ComputeZone.name == zone_name).\
             first()
 
+    if node_id is not None:
         if len(compute_zone_id_record) > 0:
             model_query(context, models.ComputeNodeComputeZoneAssociation).\
                 filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id_record[0]).\
                 delete()
     else:
+        if len(compute_zone_id_record) > 0:
+            model_query(context, models.ComputeNodeComputeZoneAssociation).\
+                filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id_record[0]).\
+                delete()
+
         model_query(context, models.ComputeZone).\
             filter(models.ComputeZone.name == zone_name).\
             delete()

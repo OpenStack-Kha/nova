@@ -106,6 +106,46 @@ class ZoneController(wsgi.Controller):
         #print(req)
         return response
 
+    def add(self, req):
+
+        zone_name = None
+        node_id = None
+
+        if 'zone_name' in req.GET:
+            zone_name = req.GET['zone_name']
+
+        if 'node_id' in req.GET:
+            node_id = req.GET['node_id']
+
+        zone_list = db.compute_zone_add(context.get_admin_context(), zone_name, node_id)
+
+        if node_id:
+            response = self._view_builder_class.list_associations(zone_list)
+        else:
+            response = self._view_builder_class.list_zones(zone_list)
+        print(req)
+        #return response
+
+    def delete(self, req):
+        zone_name = None
+        node_id = None
+
+        if 'zone_name' in req.GET:
+            zone_name = req.GET['zone_name']
+
+        if 'node_id' in req.GET:
+            node_id = req.GET['node_id']
+
+        db.compute_zone_delete(context.get_admin_context(), zone_name, node_id)
+        zone_list = db.compute_zone_list(context.get_admin_context(), zone_name)
+
+        if node_id:
+            response = self._view_builder_class.list_associations(zone_list)
+        else:
+            response = self._view_builder_class.list_zones(zone_list)
+        #print(req)
+        return response
+
 
 def create_resource():
     return wsgi.Resource(ZoneController())

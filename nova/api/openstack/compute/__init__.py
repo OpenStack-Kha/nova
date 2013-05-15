@@ -87,7 +87,7 @@ class APIRouter(nova.api.openstack.APIRouter):
         self.resources['zones'] = zones.create_resource()
         mapper.resource("zone", "zones",
                         controller=self.resources['zones'],
-                        collection={'list': 'GET'})
+                        collection={'add': 'GET', 'list': 'GET', 'delete': 'GET'})
 
         self.resources['limits'] = limits.create_resource()
         mapper.resource("limit", "limits",
