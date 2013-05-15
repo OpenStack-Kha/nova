@@ -31,6 +31,7 @@ from nova.api.openstack.compute import limits
 from nova.api.openstack.compute import server_metadata
 from nova.api.openstack.compute import servers
 from nova.api.openstack.compute import versions
+from nova.api.openstack.compute import zones
 from nova import flags
 from nova.openstack.common import cfg
 from nova.openstack.common import log as logging
@@ -82,6 +83,11 @@ class APIRouter(nova.api.openstack.APIRouter):
         mapper.resource("image", "images",
                         controller=self.resources['images'],
                         collection={'detail': 'GET'})
+
+        self.resources['zones'] = zones.create_resource()
+        mapper.resource("zone", "zones",
+                        controller=self.resources['zones'],
+                        collection={'list': 'GET'})
 
         self.resources['limits'] = limits.create_resource()
         mapper.resource("limit", "limits",
