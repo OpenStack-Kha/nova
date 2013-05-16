@@ -103,7 +103,7 @@ class ZoneController(wsgi.Controller):
             response = self._view_builder_class.list_associations(zone_list)
         else:
             response = self._view_builder_class.list_zones(zone_list)
-        #print(req)
+
         return response
 
     def add(self, req):
@@ -123,8 +123,8 @@ class ZoneController(wsgi.Controller):
             response = self._view_builder_class.list_associations(zone_list)
         else:
             response = self._view_builder_class.list_zones(zone_list)
-        print(req)
-        #return response
+
+        return response
 
     def delete(self, req):
         zone_name = None
@@ -143,7 +143,7 @@ class ZoneController(wsgi.Controller):
             response = self._view_builder_class.list_associations(zone_list)
         else:
             response = self._view_builder_class.list_zones(zone_list)
-        #print(req)
+
         return response
 
 

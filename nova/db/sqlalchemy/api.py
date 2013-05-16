@@ -686,6 +686,7 @@ def compute_zone_delete(context, zone_name, node_id=None):
         if len(compute_zone_id_record) > 0:
             model_query(context, models.ComputeNodeComputeZoneAssociation).\
                 filter(models.ComputeNodeComputeZoneAssociation.compute_zone_id == compute_zone_id_record[0]).\
+                filter(models.ComputeNodeComputeZoneAssociation.compute_node_id == node_id).\
                 delete()
     else:
         if len(compute_zone_id_record) > 0:
