@@ -1,7 +1,6 @@
 from webob import exc
 
 from nova.api.openstack import extensions
-from nova.compute import api as compute_api
 from nova import db
 from nova import context
 from nova.api.openstack import wsgi
@@ -97,12 +96,18 @@ class ZoneController(wsgi.Controller):
         if 'zone_name' in req.GET:
             zone_name = req.GET['zone_name']
 
-        zone_list = db.compute_zone_list(context.get_admin_context(), zone_name)
+        try:
+            zone_list = db.compute_zone_list(context.get_admin_context(), zone_name)
 
-        if zone_name:
-            response = self._view_builder_class.list_associations(zone_list)
-        else:
-            response = self._view_builder_class.list_zones(zone_list)
+            if zone_name:
+                response = self._view_builder_class.list_associations(zone_list)
+            else:
+                response = self._view_builder_class.list_zones(zone_list)
+
+        except exception.DBError as ex:
+            new_ex = exception.Invalid()
+            new_ex.message = ex.inner_exception.message
+            raise new_ex
 
         return response
 
@@ -117,12 +122,18 @@ class ZoneController(wsgi.Controller):
         if 'node_id' in req.GET:
             node_id = req.GET['node_id']
 
-        zone_list = db.compute_zone_add(context.get_admin_context(), zone_name, node_id)
+        try:
+            zone_list = db.compute_zone_add(context.get_admin_context(), zone_name, node_id)
 
-        if node_id:
-            response = self._view_builder_class.list_associations(zone_list)
-        else:
-            response = self._view_builder_class.list_zones(zone_list)
+            if node_id:
+                response = self._view_builder_class.list_associations(zone_list)
+            else:
+                response = self._view_builder_class.list_zones(zone_list)
+
+        except exception.DBError as ex:
+            new_ex = exception.Invalid()
+            new_ex.message = ex.inner_exception.message
+            raise new_ex
 
         return response
 
@@ -136,13 +147,19 @@ class ZoneController(wsgi.Controller):
         if 'node_id' in req.GET:
             node_id = req.GET['node_id']
 
-        db.compute_zone_delete(context.get_admin_context(), zone_name, node_id)
-        zone_list = db.compute_zone_list(context.get_admin_context(), zone_name)
+        try:
+            db.compute_zone_delete(context.get_admin_context(), zone_name, node_id)
+            zone_list = db.compute_zone_list(context.get_admin_context(), zone_name)
 
-        if node_id:
-            response = self._view_builder_class.list_associations(zone_list)
-        else:
-            response = self._view_builder_class.list_zones(zone_list)
+            if node_id:
+                response = self._view_builder_class.list_associations(zone_list)
+            else:
+                response = self._view_builder_class.list_zones(zone_list)
+
+        except exception.DBError as ex:
+            new_ex = exception.Invalid()
+            new_ex.message = ex.inner_exception.message
+            raise new_ex
 
         return response
 
